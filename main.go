@@ -15,6 +15,12 @@ import (
 	"charm.land/lipgloss/v2"
 )
 
+const (
+	MethodSelectorRowIndex int = iota
+	EnvironmentSelectorRowIndex
+	UrlInputRowIndex
+)
+
 type (
 	RequestMethod      int
 	RequestEnvironment int
@@ -36,6 +42,7 @@ const (
 
 const (
 	Dashboard Mode = iota
+	// TODO: should provide help message in Edit mode
 	Edit
 )
 
@@ -140,29 +147,54 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		case Edit:
 			switch key {
-			case "ctrl+n", "down", "enter":
-				if m.rowIndex < len(m.selectors)-1 {
+			case "j", "down":
+				if m.rowIndex < UrlInputRowIndex {
 					m.rowIndex++
 				}
-			case "ctrl+p", "up":
-				if m.rowIndex > 0 {
+			case "k", "up":
+				// TODO: maybe need to change when adding headers and body
+				if m.rowIndex > 0 && !m.textInput.Focused() {
 					m.rowIndex--
 				}
-			case "ctrl+f", "right":
-				m.selectors[m.rowIndex].Next()
-				return m, nil
-			case "ctrl+b", "left":
-				m.selectors[m.rowIndex].Prev()
+			case "l", "right":
+				if m.rowIndex < UrlInputRowIndex {
+					m.selectors[m.rowIndex].Next()
+				}
+			case "h", "left":
+				if m.rowIndex < UrlInputRowIndex {
+					m.selectors[m.rowIndex].Prev()
+				}
+			// not doing any return in above case, when we should not shadow key when user input
+			case "enter":
+				if m.rowIndex < UrlInputRowIndex {
+					m.rowIndex++
+					return m, nil
+				}
+				// m.rowIndex == UrlInputRowIndex
+				if m.textInput.Focused() {
+					m.textInput.Blur()
+				} else {
+					m.textInput.Focus()
+				}
 				return m, nil
 			case "esc":
+				if m.rowIndex == UrlInputRowIndex && m.textInput.Focused() {
+					m.textInput.Blur()
+					return m, nil
+				}
+				// todo: should reset all ui status when exit
 				m.mode = Dashboard
 				return m, nil
 			}
 		}
 	}
+	var cmds []tea.Cmd
 	var cmd tea.Cmd
 	m.list, cmd = m.list.Update(msg)
-	return m, cmd
+	cmds = append(cmds, cmd)
+	m.textInput, cmd = m.textInput.Update(msg)
+	cmds = append(cmds, cmd)
+	return m, tea.Batch(cmds...)
 }
 
 func (m model) View() tea.View {
@@ -174,7 +206,16 @@ func (m model) View() tea.View {
 		for i, selector := range m.selectors {
 			sb.WriteString(selector.View(i == m.rowIndex))
 		}
-		fmt.Fprintf(&sb, "%surl: %s", strings.Repeat(" ", 4), m.textInput.View())
+		// TODO: in get url and has query parameters should reflect that in the url?
+		if m.rowIndex == UrlInputRowIndex {
+			color := "255"
+			if m.textInput.Focused() {
+				color = "170"
+			}
+			sb.WriteString(lipgloss.NewStyle().PaddingLeft(2).Foreground(lipgloss.Color(color)).Render("> url: " + m.textInput.View()))
+		} else {
+			sb.WriteString(lipgloss.NewStyle().PaddingLeft(4).Render("url: " + m.textInput.View()))
+		}
 		return tea.NewView(lipgloss.NewStyle().PaddingTop(1).Render(sb.String()))
 	}
 }
