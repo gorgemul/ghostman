@@ -4,8 +4,13 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 
+	"ghostman/selector"
+
+	"charm.land/bubbles/v2/key"
 	"charm.land/bubbles/v2/list"
+	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 )
@@ -13,6 +18,7 @@ import (
 type (
 	RequestMethod      int
 	RequestEnvironment int
+	Mode               int
 )
 
 const (
@@ -26,6 +32,11 @@ const (
 	Staging
 	Production
 	All
+)
+
+const (
+	Dashboard Mode = iota
+	Edit
 )
 
 var requestMethodName = map[RequestMethod]string{
@@ -44,18 +55,13 @@ var requestEnvironmentName = map[RequestEnvironment]string{
 func (rm RequestMethod) String() string      { return requestMethodName[rm] }
 func (re RequestEnvironment) String() string { return requestEnvironmentName[re] }
 
-type styles struct {
-	title        lipgloss.Style
-	item         lipgloss.Style
-	selectedItem lipgloss.Style
-	pagination   lipgloss.Style
-	help         lipgloss.Style
-}
-
 type model struct {
+	mode         Mode
 	list         list.Model
+	selectors    []selector.Model
+	textInput    textinput.Model
 	selectedItem string
-	styles       styles
+	rowIndex     int
 }
 
 type item struct {
@@ -64,42 +70,94 @@ type item struct {
 	env    RequestEnvironment
 }
 
-type itemDelegate struct {
-	styles *styles
-}
+type itemDelegate struct{}
 
-func newStyles(darkBG bool) styles {
-	return styles{
-		title:        lipgloss.NewStyle().MarginLeft(2).Foreground(lipgloss.Color("170")),
-		item:         lipgloss.NewStyle().PaddingLeft(4),
-		selectedItem: lipgloss.NewStyle().PaddingLeft(2).Foreground(lipgloss.Color("170")),
-		pagination:   list.DefaultStyles(darkBG).PaginationStyle.PaddingLeft(4),
-		help:         list.DefaultStyles(darkBG).HelpStyle.PaddingLeft(4).PaddingBottom(2),
+func initialModel() model {
+	// TODO: should get it from store
+	l := list.New(
+		[]list.Item{
+			item{url: "https://backend/something", method: Post, env: Test},
+			item{url: "http://localhost:1234/whoami", method: Get, env: Local},
+			item{url: "http://localhost:5678/foo/bar", method: Post, env: Local},
+		},
+		itemDelegate{},
+		20,
+		16,
+	)
+	selectors := []selector.Model{
+		selector.New("Method", []string{Get.String(), Post.String()}),
+		selector.New("Environment", []string{Local.String(), Test.String(), Staging.String(), Production.String()}),
 	}
-}
+	ti := textinput.New()
+	ti.Placeholder = "Please input url"
+	ti.CharLimit = 128
+	ti.SetWidth(128)
+	ti.Prompt = ""
+	// TODO: get this from config table
+	l.Title = "[Staging] [Get]"
+	l.SetShowStatusBar(false)
+	l.AdditionalShortHelpKeys = func() []key.Binding {
+		return []key.Binding{
+			key.NewBinding(key.WithKeys("n"), key.WithHelp("n", "new request")),
+		}
+	}
+	l.AdditionalFullHelpKeys = func() []key.Binding {
+		return []key.Binding{
+			key.NewBinding(key.WithKeys("n"), key.WithHelp("n", "new request")),
+		}
+	}
 
-func (m *model) updateStyles(isDark bool) {
-	m.styles = newStyles(isDark)
-	m.list.Styles.Title = m.styles.title
-	m.list.Styles.PaginationStyle = m.styles.pagination
-	m.list.Styles.HelpStyle = m.styles.help
-	m.list.SetDelegate(itemDelegate{styles: &m.styles})
+	isDark := true
+	m := model{mode: Dashboard, list: l, selectors: selectors, textInput: ti, rowIndex: 0}
+	m.list.Styles.Title = lipgloss.NewStyle().MarginLeft(2).Foreground(lipgloss.Color("170"))
+	m.list.Styles.PaginationStyle = list.DefaultStyles(isDark).PaginationStyle.PaddingLeft(4)
+	m.list.Styles.HelpStyle = list.DefaultStyles(isDark).HelpStyle.PaddingLeft(4).PaddingBottom(2)
+	m.list.SetDelegate(itemDelegate{})
+	return m
 }
 
 func (m model) Init() tea.Cmd { return nil }
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyPressMsg:
+		key := msg.String()
 		// TODO: should add a add/update mode for create entry for url, sqlite3 would be great for store
-		switch key := msg.String(); key {
-		case "q", "ctrl+c":
-			return m, tea.Quit
-		case "enter":
-			i, ok := m.list.SelectedItem().(item)
-			if ok {
-				m.selectedItem = i.url
+		switch m.mode {
+		case Dashboard:
+			switch key {
+			case "q", "ctrl+c":
+				return m, tea.Quit
+			case "enter":
+				i, ok := m.list.SelectedItem().(item)
+				if ok {
+					m.selectedItem = i.url
+					m.mode = Edit
+				}
+				return m, nil
+			case "n":
+				m.mode = Edit
+				return m, nil
 			}
-			return m, tea.Quit
+		case Edit:
+			switch key {
+			case "ctrl+n", "down", "enter":
+				if m.rowIndex < len(m.selectors)-1 {
+					m.rowIndex++
+				}
+			case "ctrl+p", "up":
+				if m.rowIndex > 0 {
+					m.rowIndex--
+				}
+			case "ctrl+f", "right":
+				m.selectors[m.rowIndex].Next()
+				return m, nil
+			case "ctrl+b", "left":
+				m.selectors[m.rowIndex].Prev()
+				return m, nil
+			case "esc":
+				m.mode = Dashboard
+				return m, nil
+			}
 		}
 	}
 	var cmd tea.Cmd
@@ -108,10 +166,17 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m model) View() tea.View {
-	if m.selectedItem != "" {
-		return tea.NewView(lipgloss.NewStyle().Render(fmt.Sprintf("%s\n", m.selectedItem)))
+	switch m.mode {
+	case Dashboard:
+		return tea.NewView("\n" + m.list.View())
+	default: // Edit
+		var sb strings.Builder
+		for i, selector := range m.selectors {
+			sb.WriteString(selector.View(i == m.rowIndex))
+		}
+		fmt.Fprintf(&sb, "%surl: %s", strings.Repeat(" ", 4), m.textInput.View())
+		return tea.NewView(lipgloss.NewStyle().PaddingTop(1).Render(sb.String()))
 	}
-	return tea.NewView("\n" + m.list.View())
 }
 
 func (i item) FilterValue() string { return string(i.url) }
@@ -127,33 +192,16 @@ func (d itemDelegate) Render(w io.Writer, m list.Model, index int, listItem list
 	str := fmt.Sprintf("%s", i.url)
 
 	if index == m.Index() {
-		str = d.styles.selectedItem.Render("> " + str)
+		str = lipgloss.NewStyle().PaddingLeft(2).Foreground(lipgloss.Color("170")).Render("> " + str)
 	} else {
-		str = d.styles.item.Render(str)
+		str = lipgloss.NewStyle().PaddingLeft(4).Render(str)
 	}
 
 	fmt.Fprint(w, str)
 }
 
-func newModel() model {
-	// TODO: should get it from store
-	items := []list.Item{
-		item{url: "https://backend/something", method: Post, env: Test},
-		item{url: "http://localhost:1234/whoami", method: Get, env: Local},
-		item{url: "http://localhost:5678/foo/bar", method: Post, env: Local},
-	}
-	l := list.New(items, itemDelegate{}, 20, 16)
-	// TODO: get this from config table
-	l.Title = "[Staging] [Get]"
-	l.SetShowStatusBar(false)
-
-	m := model{list: l}
-	m.updateStyles(true)
-	return m
-}
-
 func main() {
-	if _, err := tea.NewProgram(newModel()).Run(); err != nil {
+	if _, err := tea.NewProgram(initialModel()).Run(); err != nil {
 		fmt.Println("[ERROR] ghostman running fail:", err)
 		os.Exit(1)
 	}
