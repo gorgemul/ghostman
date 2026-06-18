@@ -15,8 +15,12 @@ type Model struct {
 }
 
 func New(title string, choices []string) Model {
+	var t string
+	if len(title) > 0 {
+		t = fmt.Sprintf("%s: ", title)
+	}
 	return Model{
-		title:   fmt.Sprintf("%s: ", title),
+		title:   t,
 		choices: slices.Clone(choices),
 		index:   0,
 	}
@@ -32,6 +36,14 @@ func (m *Model) Prev() {
 	if m.index > 0 {
 		m.index--
 	}
+}
+
+func (m *Model) Reset() {
+	m.index = 0
+}
+
+func (m Model) Choice() string {
+	return m.choices[m.index]
 }
 
 func (m Model) View(inCurrentRow bool) string {

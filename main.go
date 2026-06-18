@@ -19,6 +19,8 @@ const (
 	MethodSelectorRowIndex int = iota
 	EnvironmentSelectorRowIndex
 	UrlInputRowIndex
+	// TODO: handle dynamic row like header and body
+	EditProgressSelectorRowIndex
 )
 
 type (
@@ -44,6 +46,7 @@ const (
 	Dashboard Mode = iota
 	// TODO: should provide help message in Edit mode
 	Edit
+	// TODO: should do a view mode when enter to view a list
 )
 
 var requestMethodName = map[RequestMethod]string{
@@ -63,14 +66,17 @@ func (rm RequestMethod) String() string      { return requestMethodName[rm] }
 func (re RequestEnvironment) String() string { return requestEnvironmentName[re] }
 
 type model struct {
-	mode         Mode
-	list         list.Model
-	selectors    []selector.Model
-	textInput    textinput.Model
-	selectedItem string
+	mode      Mode
+	list      list.Model
+	selectors []selector.Model
+	textInput textinput.Model
+	// TODO: maybe should not be a separate field in the struct
+	editProgress selector.Model
+	selectedItem string // TODO: selected index to get list item?
 	rowIndex     int
 }
 
+// TODO: should has extra info about headers and body
 type item struct {
 	url    string
 	method RequestMethod
@@ -113,9 +119,15 @@ func initialModel() model {
 			key.NewBinding(key.WithKeys("n"), key.WithHelp("n", "new request")),
 		}
 	}
-
 	isDark := true
-	m := model{mode: Dashboard, list: l, selectors: selectors, textInput: ti, rowIndex: 0}
+	m := model{
+		mode:         Dashboard,
+		list:         l,
+		selectors:    selectors,
+		textInput:    ti,
+		editProgress: selector.New("", []string{"save", "cancel"}),
+		rowIndex:     0,
+	}
 	m.list.Styles.Title = lipgloss.NewStyle().MarginLeft(2).Foreground(lipgloss.Color("170"))
 	m.list.Styles.PaginationStyle = list.DefaultStyles(isDark).PaginationStyle.PaddingLeft(4)
 	m.list.Styles.HelpStyle = list.DefaultStyles(isDark).HelpStyle.PaddingLeft(4).PaddingBottom(2)
@@ -126,6 +138,13 @@ func initialModel() model {
 func (m model) Init() tea.Cmd { return nil }
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
+	case tea.PasteMsg:
+		if m.mode == Edit && m.textInput.Focused() {
+			var cmd tea.Cmd
+			m.textInput, cmd = m.textInput.Update(msg)
+			return m, cmd
+		}
+		return m, nil
 	case tea.KeyPressMsg:
 		key := msg.String()
 		// TODO: should add a add/update mode for create entry for url, sqlite3 would be great for store
@@ -145,10 +164,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.mode = Edit
 				return m, nil
 			}
+			var cmd tea.Cmd
+			m.list, cmd = m.list.Update(msg)
+			return m, cmd
 		case Edit:
 			switch key {
 			case "j", "down":
-				if m.rowIndex < UrlInputRowIndex {
+				if m.rowIndex < EditProgressSelectorRowIndex && !m.textInput.Focused() {
 					m.rowIndex++
 				}
 			case "k", "up":
@@ -160,41 +182,52 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if m.rowIndex < UrlInputRowIndex {
 					m.selectors[m.rowIndex].Next()
 				}
+				// NOTE: stink
+				if m.rowIndex == EditProgressSelectorRowIndex {
+					m.editProgress.Next()
+				}
 			case "h", "left":
 				if m.rowIndex < UrlInputRowIndex {
 					m.selectors[m.rowIndex].Prev()
+				}
+				if m.rowIndex == EditProgressSelectorRowIndex {
+					m.editProgress.Prev()
 				}
 			// not doing any return in above case, when we should not shadow key when user input
 			case "enter":
 				if m.rowIndex < UrlInputRowIndex {
 					m.rowIndex++
 					return m, nil
-				}
-				// m.rowIndex == UrlInputRowIndex
-				if m.textInput.Focused() {
-					m.textInput.Blur()
-				} else {
-					m.textInput.Focus()
+				} else if m.rowIndex == UrlInputRowIndex {
+					if m.textInput.Focused() {
+						m.textInput.Blur()
+					} else {
+						m.textInput.Focus()
+					}
+				} else { // m.rowIndex > UrlInputRowIndex
+					if m.editProgress.Choice() == "save" {
+						// TODO: do a save to db if in edit mode, but in view mode should just save whatever user has updated
+					}
+					m.reset()
+					m.mode = Dashboard
 				}
 				return m, nil
-			case "esc":
+			case "esc", "ctrl+c":
 				if m.rowIndex == UrlInputRowIndex && m.textInput.Focused() {
 					m.textInput.Blur()
 					return m, nil
 				}
-				// todo: should reset all ui status when exit
+				m.reset()
 				m.mode = Dashboard
 				return m, nil
 			}
+			var cmd tea.Cmd
+			m.textInput, cmd = m.textInput.Update(msg)
+			return m, cmd
 		}
 	}
-	var cmds []tea.Cmd
-	var cmd tea.Cmd
-	m.list, cmd = m.list.Update(msg)
-	cmds = append(cmds, cmd)
-	m.textInput, cmd = m.textInput.Update(msg)
-	cmds = append(cmds, cmd)
-	return m, tea.Batch(cmds...)
+	// NOTE: will never reach here when in exhaustive enumeration
+	return m, nil
 }
 
 func (m model) View() tea.View {
@@ -203,21 +236,34 @@ func (m model) View() tea.View {
 		return tea.NewView("\n" + m.list.View())
 	default: // Edit
 		var sb strings.Builder
+		// render request method and environment selectors
 		for i, selector := range m.selectors {
 			sb.WriteString(selector.View(i == m.rowIndex))
 		}
+		// render url text input
 		// TODO: in get url and has query parameters should reflect that in the url?
 		if m.rowIndex == UrlInputRowIndex {
 			color := "255"
 			if m.textInput.Focused() {
 				color = "170"
 			}
-			sb.WriteString(lipgloss.NewStyle().PaddingLeft(2).Foreground(lipgloss.Color(color)).Render("> url: " + m.textInput.View()))
+			sb.WriteString(lipgloss.NewStyle().PaddingLeft(2).Foreground(lipgloss.Color(color)).Render("> Url: " + m.textInput.View()))
 		} else {
-			sb.WriteString(lipgloss.NewStyle().PaddingLeft(4).Render("url: " + m.textInput.View()))
+			sb.WriteString(lipgloss.NewStyle().PaddingLeft(4).Render("Url: " + m.textInput.View()))
 		}
+		// render edit progress selector
+		sb.WriteString(lipgloss.NewStyle().PaddingTop(1).Render(m.editProgress.View(m.rowIndex == EditProgressSelectorRowIndex)))
 		return tea.NewView(lipgloss.NewStyle().PaddingTop(1).Render(sb.String()))
 	}
+}
+
+func (m *model) reset() {
+	m.rowIndex = 0
+	for i := range m.selectors {
+		m.selectors[i].Reset()
+	}
+	m.textInput.Reset()
+	m.editProgress.Reset()
 }
 
 func (i item) FilterValue() string { return string(i.url) }
