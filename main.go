@@ -16,11 +16,11 @@ import (
 )
 
 const (
-	MethodSelectorRowIndex int = iota
-	EnvironmentSelectorRowIndex
-	UrlInputRowIndex
+	RequestMethodSelectorIndex int = iota
+	RequestEnvironmentSelectorIndex
+	UrlInputIndex
 	// TODO: handle dynamic row like header and body
-	EditProgressSelectorRowIndex
+	ConfirmSelectorIndex
 )
 
 type (
@@ -65,19 +65,27 @@ var requestEnvironmentName = map[RequestEnvironment]string{
 func (rm RequestMethod) String() string      { return requestMethodName[rm] }
 func (re RequestEnvironment) String() string { return requestEnvironmentName[re] }
 
+type dashboardModel struct {
+	list list.Model
+}
+
+type editModel struct {
+	index              int
+	requestMethod      selector.Model
+	requestEnvironment selector.Model
+	urlInput           textinput.Model
+	confirm            selector.Model
+}
+
 type model struct {
 	mode      Mode
-	list      list.Model
-	selectors []selector.Model
-	textInput textinput.Model
-	// TODO: maybe should not be a separate field in the struct
-	editProgress selector.Model
-	selectedItem string // TODO: selected index to get list item?
-	rowIndex     int
+	dashboard dashboardModel // Mode == Dashboard
+	edit      editModel      // Mode == Edit
 }
 
 // TODO: should has extra info about headers and body
 type item struct {
+	id     int
 	url    string
 	method RequestMethod
 	env    RequestEnvironment
@@ -86,6 +94,11 @@ type item struct {
 type itemDelegate struct{}
 
 func initialModel() model {
+	ti := textinput.New()
+	ti.Placeholder = "Please input url"
+	ti.CharLimit = 128
+	ti.SetWidth(128)
+	ti.Prompt = ""
 	// TODO: should get it from store
 	l := list.New(
 		[]list.Item{
@@ -97,15 +110,6 @@ func initialModel() model {
 		20,
 		16,
 	)
-	selectors := []selector.Model{
-		selector.New("Method", []string{Get.String(), Post.String()}),
-		selector.New("Environment", []string{Local.String(), Test.String(), Staging.String(), Production.String()}),
-	}
-	ti := textinput.New()
-	ti.Placeholder = "Please input url"
-	ti.CharLimit = 128
-	ti.SetWidth(128)
-	ti.Prompt = ""
 	// TODO: get this from config table
 	l.Title = "[Staging] [Get]"
 	l.SetShowStatusBar(false)
@@ -119,151 +123,158 @@ func initialModel() model {
 			key.NewBinding(key.WithKeys("n"), key.WithHelp("n", "new request")),
 		}
 	}
-	isDark := true
 	m := model{
-		mode:         Dashboard,
-		list:         l,
-		selectors:    selectors,
-		textInput:    ti,
-		editProgress: selector.New("", []string{"save", "cancel"}),
-		rowIndex:     0,
+		mode:      Dashboard,
+		dashboard: dashboardModel{list: l},
+		edit: editModel{
+			index:              0,
+			requestMethod:      selector.New("Method", []string{Get.String(), Post.String()}),
+			requestEnvironment: selector.New("Environment", []string{Local.String(), Test.String(), Staging.String(), Production.String()}),
+			urlInput:           ti,
+			confirm:            selector.New("", []string{"save", "cancel"}),
+		},
 	}
-	m.list.Styles.Title = lipgloss.NewStyle().MarginLeft(2).Foreground(lipgloss.Color("170"))
-	m.list.Styles.PaginationStyle = list.DefaultStyles(isDark).PaginationStyle.PaddingLeft(4)
-	m.list.Styles.HelpStyle = list.DefaultStyles(isDark).HelpStyle.PaddingLeft(4).PaddingBottom(2)
-	m.list.SetDelegate(itemDelegate{})
+	isDark := true
+	m.dashboard.list.Styles.Title = lipgloss.NewStyle().MarginLeft(2).Foreground(lipgloss.Color("170"))
+	m.dashboard.list.Styles.PaginationStyle = list.DefaultStyles(isDark).PaginationStyle.PaddingLeft(4)
+	m.dashboard.list.Styles.HelpStyle = list.DefaultStyles(isDark).HelpStyle.PaddingLeft(4).PaddingBottom(2)
+	m.dashboard.list.SetDelegate(itemDelegate{})
 	return m
 }
 
 func (m model) Init() tea.Cmd { return nil }
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	switch msg := msg.(type) {
-	case tea.PasteMsg:
-		if m.mode == Edit && m.textInput.Focused() {
-			var cmd tea.Cmd
-			m.textInput, cmd = m.textInput.Update(msg)
-			return m, cmd
-		}
-		return m, nil
-	case tea.KeyPressMsg:
-		key := msg.String()
-		// TODO: should add a add/update mode for create entry for url, sqlite3 would be great for store
-		switch m.mode {
-		case Dashboard:
-			switch key {
+	switch m.mode {
+	case Dashboard:
+		switch msg := msg.(type) {
+		case tea.KeyPressMsg:
+			// TODO: should add a add/update mode for create entry for url, sqlite3 would be great for store
+			switch msg.String() {
 			case "q", "ctrl+c":
 				return m, tea.Quit
 			case "enter":
-				i, ok := m.list.SelectedItem().(item)
+				_, ok := m.dashboard.list.SelectedItem().(item)
 				if ok {
-					m.selectedItem = i.url
 					m.mode = Edit
+					m.resetDashboardModel()
 				}
 				return m, nil
 			case "n":
 				m.mode = Edit
+				m.resetDashboardModel()
 				return m, nil
 			}
-			var cmd tea.Cmd
-			m.list, cmd = m.list.Update(msg)
-			return m, cmd
-		case Edit:
-			switch key {
+		}
+		var cmd tea.Cmd
+		m.dashboard.list, cmd = m.dashboard.list.Update(msg)
+		return m, cmd
+	case Edit:
+		switch msg := msg.(type) {
+		case tea.PasteMsg:
+			if m.edit.urlInput.Focused() {
+				var cmd tea.Cmd
+				m.edit.urlInput, cmd = m.edit.urlInput.Update(msg)
+				return m, cmd
+			}
+		case tea.KeyPressMsg:
+			switch msg.String() {
 			case "j", "down":
-				if m.rowIndex < EditProgressSelectorRowIndex && !m.textInput.Focused() {
-					m.rowIndex++
+				if m.edit.index < ConfirmSelectorIndex && !m.edit.urlInput.Focused() {
+					m.edit.index++
 				}
 			case "k", "up":
 				// TODO: maybe need to change when adding headers and body
-				if m.rowIndex > 0 && !m.textInput.Focused() {
-					m.rowIndex--
+				if m.edit.index > 0 && !m.edit.urlInput.Focused() {
+					m.edit.index--
 				}
 			case "l", "right":
-				if m.rowIndex < UrlInputRowIndex {
-					m.selectors[m.rowIndex].Next()
-				}
-				// NOTE: stink
-				if m.rowIndex == EditProgressSelectorRowIndex {
-					m.editProgress.Next()
+				switch m.edit.index {
+				case RequestMethodSelectorIndex:
+					m.edit.requestMethod.Next()
+				case RequestEnvironmentSelectorIndex:
+					m.edit.requestEnvironment.Next()
+				case ConfirmSelectorIndex:
+					m.edit.confirm.Next()
 				}
 			case "h", "left":
-				if m.rowIndex < UrlInputRowIndex {
-					m.selectors[m.rowIndex].Prev()
-				}
-				if m.rowIndex == EditProgressSelectorRowIndex {
-					m.editProgress.Prev()
+				switch m.edit.index {
+				case RequestMethodSelectorIndex:
+					m.edit.requestMethod.Prev()
+				case RequestEnvironmentSelectorIndex:
+					m.edit.requestEnvironment.Prev()
+				case ConfirmSelectorIndex:
+					m.edit.confirm.Prev()
 				}
 			// not doing any return in above case, when we should not shadow key when user input
 			case "enter":
-				if m.rowIndex < UrlInputRowIndex {
-					m.rowIndex++
-					return m, nil
-				} else if m.rowIndex == UrlInputRowIndex {
-					if m.textInput.Focused() {
-						m.textInput.Blur()
+				// TODO: should reset the list status here
+				switch m.edit.index {
+				case RequestMethodSelectorIndex, RequestEnvironmentSelectorIndex:
+					m.edit.index++
+				case UrlInputIndex:
+					if m.edit.urlInput.Focused() {
+						m.edit.urlInput.Blur()
 					} else {
-						m.textInput.Focus()
+						m.edit.urlInput.Focus()
 					}
-				} else { // m.rowIndex > UrlInputRowIndex
-					if m.editProgress.Choice() == "save" {
+				case ConfirmSelectorIndex:
+					if m.edit.confirm.Choice() == "save" {
 						// TODO: do a save to db if in edit mode, but in view mode should just save whatever user has updated
 					}
-					m.reset()
+					m.resetEditModel()
 					m.mode = Dashboard
 				}
 				return m, nil
 			case "esc", "ctrl+c":
-				if m.rowIndex == UrlInputRowIndex && m.textInput.Focused() {
-					m.textInput.Blur()
+				if m.edit.index == UrlInputIndex && m.edit.urlInput.Focused() {
+					m.edit.urlInput.Blur()
 					return m, nil
 				}
-				m.reset()
-				m.mode = Dashboard
-				return m, nil
 			}
-			var cmd tea.Cmd
-			m.textInput, cmd = m.textInput.Update(msg)
-			return m, cmd
 		}
+		var cmd tea.Cmd
+		m.edit.urlInput, cmd = m.edit.urlInput.Update(msg)
+		return m, cmd
 	}
-	// NOTE: will never reach here when in exhaustive enumeration
 	return m, nil
 }
 
 func (m model) View() tea.View {
 	switch m.mode {
 	case Dashboard:
-		return tea.NewView("\n" + m.list.View())
-	default: // Edit
+		return tea.NewView("\n" + m.dashboard.list.View())
+	case Edit:
 		var sb strings.Builder
-		// render request method and environment selectors
-		for i, selector := range m.selectors {
-			sb.WriteString(selector.View(i == m.rowIndex))
-		}
-		// render url text input
+		sb.WriteString(m.edit.requestMethod.View(m.edit.index == RequestMethodSelectorIndex))
+		sb.WriteString(m.edit.requestEnvironment.View(m.edit.index == RequestEnvironmentSelectorIndex))
 		// TODO: in get url and has query parameters should reflect that in the url?
-		if m.rowIndex == UrlInputRowIndex {
+		if m.edit.index == UrlInputIndex {
 			color := "255"
-			if m.textInput.Focused() {
+			if m.edit.urlInput.Focused() {
 				color = "170"
 			}
-			sb.WriteString(lipgloss.NewStyle().PaddingLeft(2).Foreground(lipgloss.Color(color)).Render("> Url: " + m.textInput.View()))
+			sb.WriteString(lipgloss.NewStyle().PaddingLeft(2).Foreground(lipgloss.Color(color)).Render("> Url: " + m.edit.urlInput.View()))
 		} else {
-			sb.WriteString(lipgloss.NewStyle().PaddingLeft(4).Render("Url: " + m.textInput.View()))
+			sb.WriteString(lipgloss.NewStyle().PaddingLeft(4).Render("Url: " + m.edit.urlInput.View()))
 		}
 		// render edit progress selector
-		sb.WriteString(lipgloss.NewStyle().PaddingTop(1).Render(m.editProgress.View(m.rowIndex == EditProgressSelectorRowIndex)))
+		sb.WriteString(lipgloss.NewStyle().PaddingTop(1).Render(m.edit.confirm.View(m.edit.index == ConfirmSelectorIndex)))
 		return tea.NewView(lipgloss.NewStyle().PaddingTop(1).Render(sb.String()))
 	}
+	return tea.NewView("[ERROR] should never reach here")
 }
 
-func (m *model) reset() {
-	m.rowIndex = 0
-	for i := range m.selectors {
-		m.selectors[i].Reset()
-	}
-	m.textInput.Reset()
-	m.editProgress.Reset()
+func (m *model) resetEditModel() {
+	m.edit.index = 0
+	m.edit.requestMethod.Reset()
+	m.edit.requestEnvironment.Reset()
+	m.edit.urlInput.Reset()
+	m.edit.confirm.Reset()
+}
+
+func (m *model) resetDashboardModel() {
+	m.dashboard.list.ResetSelected()
+	m.dashboard.list.ResetFilter()
 }
 
 func (i item) FilterValue() string { return string(i.url) }
