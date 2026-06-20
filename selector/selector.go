@@ -42,7 +42,16 @@ func (m *Model) Reset() {
 	m.index = 0
 }
 
-func (m Model) Choice() string {
+func (m *Model) SetValue(value string) {
+	for i, choice := range m.choices {
+		if choice == value {
+			m.index = i
+			break
+		}
+	}
+}
+
+func (m Model) Value() string {
 	return m.choices[m.index]
 }
 

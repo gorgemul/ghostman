@@ -39,6 +39,7 @@ type dashboardModel struct {
 }
 
 type editModel struct {
+	requestId          *int64 // to differenciate insert and update in edit mode
 	index              int
 	requestMethod      selector.Model
 	requestEnvironment selector.Model
@@ -119,10 +120,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case "q", "ctrl+c":
 				return m, tea.Quit
 			case "enter":
-				_, ok := m.dashboard.list.SelectedItem().(store.RequestEntity)
+				req, ok := m.dashboard.list.SelectedItem().(store.RequestEntity)
 				if ok {
-					m.mode = Edit
 					m.resetDashboardModel()
+					m.edit.requestId = &req.Id
+					m.edit.requestMethod.SetValue(req.Method)
+					m.edit.requestEnvironment.SetValue(req.Environment)
+					m.edit.urlInput.SetValue(req.Url)
+					m.mode = Edit
 				}
 				return m, nil
 			case "n":
@@ -173,7 +178,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			// not doing any return in above case, when we should not shadow key when user input
 			case "enter":
-				// TODO: should reset the list status here
 				switch m.edit.index {
 				case RequestMethodSelectorIndex, RequestEnvironmentSelectorIndex:
 					m.edit.index++
@@ -184,8 +188,26 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						m.edit.urlInput.Focus()
 					}
 				case ConfirmSelectorIndex:
-					if m.edit.confirm.Choice() == "save" {
-						// TODO: do a save to db if in edit mode, but in view mode should just save whatever user has updated
+					if m.edit.confirm.Value() == "save" {
+						if _, err := m.store.UpsertRequest(store.UpsertRequestParams{
+							Id:          m.edit.requestId,
+							Url:         m.edit.urlInput.Value(),
+							Method:      m.edit.requestMethod.Value(),
+							Environment: m.edit.requestEnvironment.Value(),
+						}); err != nil {
+							log.Println("Update: ", err)
+						} else {
+							// success
+							if reqs, err := m.store.FindRequests(); err != nil {
+								log.Println("Update: ", err)
+							} else {
+								items := []list.Item{}
+								for _, req := range reqs {
+									items = append(items, req)
+								}
+								m.dashboard.list.SetItems(items)
+							}
+						}
 					}
 					m.resetEditModel()
 					m.mode = Dashboard
@@ -230,6 +252,7 @@ func (m model) View() tea.View {
 }
 
 func (m *model) resetEditModel() {
+	m.edit.requestId = nil
 	m.edit.index = 0
 	m.edit.requestMethod.Reset()
 	m.edit.requestEnvironment.Reset()

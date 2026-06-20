@@ -26,17 +26,12 @@ type UpsertRequestParams struct {
 }
 
 type Store struct {
-	loc      *time.Location
 	Requests *sql.DB
 }
 
 func (re RequestEntity) FilterValue() string { return string(re.Url) }
 
 func New() (*Store, error) {
-	loc, err := time.LoadLocation("Asia/Shanghai")
-	if err != nil {
-		return nil, err
-	}
 	db, err := sql.Open("sqlite3", "./requests.db")
 	if err != nil {
 		return nil, err
@@ -55,7 +50,7 @@ func New() (*Store, error) {
 		db.Close()
 		return nil, err
 	}
-	return &Store{Requests: db, loc: loc}, nil
+	return &Store{Requests: db}, nil
 }
 
 func (s *Store) FindRequests() ([]RequestEntity, error) {
