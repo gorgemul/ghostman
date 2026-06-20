@@ -3,10 +3,12 @@ package main
 import (
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"strings"
 
 	"ghostman/selector"
+	"ghostman/store"
 
 	"charm.land/bubbles/v2/key"
 	"charm.land/bubbles/v2/list"
@@ -23,24 +25,7 @@ const (
 	ConfirmSelectorIndex
 )
 
-type (
-	RequestMethod      int
-	RequestEnvironment int
-	Mode               int
-)
-
-const (
-	Get RequestMethod = iota
-	Post
-)
-
-const (
-	Local RequestEnvironment = iota
-	Test
-	Staging
-	Production
-	All
-)
+type Mode int
 
 const (
 	Dashboard Mode = iota
@@ -48,22 +33,6 @@ const (
 	Edit
 	// TODO: should do a view mode when enter to view a list
 )
-
-var requestMethodName = map[RequestMethod]string{
-	Get:  "get",
-	Post: "post",
-}
-
-var requestEnvironmentName = map[RequestEnvironment]string{
-	Local:      "local",
-	Test:       "test",
-	Staging:    "staging",
-	Production: "production",
-	All:        "all",
-}
-
-func (rm RequestMethod) String() string      { return requestMethodName[rm] }
-func (re RequestEnvironment) String() string { return requestEnvironmentName[re] }
 
 type dashboardModel struct {
 	list list.Model
@@ -78,34 +47,30 @@ type editModel struct {
 }
 
 type model struct {
+	store     *store.Store
 	mode      Mode
 	dashboard dashboardModel // Mode == Dashboard
 	edit      editModel      // Mode == Edit
 }
 
-// TODO: should has extra info about headers and body
-type item struct {
-	id     int
-	url    string
-	method RequestMethod
-	env    RequestEnvironment
-}
-
 type itemDelegate struct{}
 
-func initialModel() model {
+func initialModel(store *store.Store) model {
 	ti := textinput.New()
 	ti.Placeholder = "Please input url"
 	ti.CharLimit = 128
 	ti.SetWidth(128)
 	ti.Prompt = ""
-	// TODO: should get it from store
+	items := []list.Item{}
+	if reqs, err := store.FindRequests(); err != nil {
+		log.Println("InitialModel: ", err)
+	} else {
+		for _, req := range reqs {
+			items = append(items, req)
+		}
+	}
 	l := list.New(
-		[]list.Item{
-			item{url: "https://backend/something", method: Post, env: Test},
-			item{url: "http://localhost:1234/whoami", method: Get, env: Local},
-			item{url: "http://localhost:5678/foo/bar", method: Post, env: Local},
-		},
+		items,
 		itemDelegate{},
 		20,
 		16,
@@ -124,12 +89,13 @@ func initialModel() model {
 		}
 	}
 	m := model{
+		store:     store,
 		mode:      Dashboard,
 		dashboard: dashboardModel{list: l},
 		edit: editModel{
 			index:              0,
-			requestMethod:      selector.New("Method", []string{Get.String(), Post.String()}),
-			requestEnvironment: selector.New("Environment", []string{Local.String(), Test.String(), Staging.String(), Production.String()}),
+			requestMethod:      selector.New("Method", []string{"get", "post"}),
+			requestEnvironment: selector.New("Environment", []string{"local", "test", "staging", "production"}),
 			urlInput:           ti,
 			confirm:            selector.New("", []string{"save", "cancel"}),
 		},
@@ -153,7 +119,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case "q", "ctrl+c":
 				return m, tea.Quit
 			case "enter":
-				_, ok := m.dashboard.list.SelectedItem().(item)
+				_, ok := m.dashboard.list.SelectedItem().(store.RequestEntity)
 				if ok {
 					m.mode = Edit
 					m.resetDashboardModel()
@@ -257,7 +223,6 @@ func (m model) View() tea.View {
 		} else {
 			sb.WriteString(lipgloss.NewStyle().PaddingLeft(4).Render("Url: " + m.edit.urlInput.View()))
 		}
-		// render edit progress selector
 		sb.WriteString(lipgloss.NewStyle().PaddingTop(1).Render(m.edit.confirm.View(m.edit.index == ConfirmSelectorIndex)))
 		return tea.NewView(lipgloss.NewStyle().PaddingTop(1).Render(sb.String()))
 	}
@@ -277,17 +242,15 @@ func (m *model) resetDashboardModel() {
 	m.dashboard.list.ResetFilter()
 }
 
-func (i item) FilterValue() string { return string(i.url) }
-
 func (d itemDelegate) Height() int                             { return 1 }
 func (d itemDelegate) Spacing() int                            { return 0 }
 func (d itemDelegate) Update(_ tea.Msg, _ *list.Model) tea.Cmd { return nil }
 func (d itemDelegate) Render(w io.Writer, m list.Model, index int, listItem list.Item) {
-	i, ok := listItem.(item)
+	i, ok := listItem.(store.RequestEntity)
 	if !ok {
 		return
 	}
-	str := fmt.Sprintf("%s", i.url)
+	str := fmt.Sprintf("%s", i.Url)
 
 	if index == m.Index() {
 		str = lipgloss.NewStyle().PaddingLeft(2).Foreground(lipgloss.Color("170")).Render("> " + str)
@@ -299,8 +262,21 @@ func (d itemDelegate) Render(w io.Writer, m list.Model, index int, listItem list
 }
 
 func main() {
-	if _, err := tea.NewProgram(initialModel()).Run(); err != nil {
-		fmt.Println("[ERROR] ghostman running fail:", err)
+	if len(os.Getenv("DEBUG")) > 0 {
+		f, err := tea.LogToFile("dev.log", "[DEBUG]")
+		if err != nil {
+			fmt.Println("[FATAL] fail to log to file: ", err)
+			os.Exit(1)
+		}
+		defer f.Close()
+	}
+	store, err := store.New()
+	if err != nil {
+		fmt.Println("[FATAL] fail to initialize store: ", err)
+		os.Exit(1)
+	}
+	if _, err := tea.NewProgram(initialModel(store)).Run(); err != nil {
+		fmt.Println("[FATAL] fail to run ghostman: ", err)
 		os.Exit(1)
 	}
 }
