@@ -73,20 +73,27 @@ func initialModel(store *store.Store) model {
 	l := list.New(
 		items,
 		itemDelegate{},
+		60,
 		20,
-		16,
 	)
-	// TODO: get this from config table
-	l.Title = "[Staging] [Get]"
+	config := store.FindConfig()
+	l.Title = fmt.Sprintf("env: %s, method: %s", config.Environment, config.Method)
 	l.SetShowStatusBar(false)
 	l.AdditionalShortHelpKeys = func() []key.Binding {
 		return []key.Binding{
-			key.NewBinding(key.WithKeys("n"), key.WithHelp("n", "new request")),
+			key.NewBinding(key.WithKeys("n"), key.WithHelp("n", "new")),
+			key.NewBinding(key.WithKeys("e"), key.WithHelp("e", "edit")),
+			// TODO: implement this, should change configs data in the db
+			key.NewBinding(key.WithKeys("E"), key.WithHelp("E", "environment")),
+			key.NewBinding(key.WithKeys("M"), key.WithHelp("M", "method")),
 		}
 	}
 	l.AdditionalFullHelpKeys = func() []key.Binding {
 		return []key.Binding{
-			key.NewBinding(key.WithKeys("n"), key.WithHelp("n", "new request")),
+			key.NewBinding(key.WithKeys("n"), key.WithHelp("n", "new")),
+			key.NewBinding(key.WithKeys("e"), key.WithHelp("e", "edit")),
+			key.NewBinding(key.WithKeys("E"), key.WithHelp("E", "environment")),
+			key.NewBinding(key.WithKeys("M"), key.WithHelp("M", "method")),
 		}
 	}
 	m := model{
@@ -119,7 +126,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			switch msg.String() {
 			case "q", "ctrl+c":
 				return m, tea.Quit
-			case "enter":
+			case "E":
+				return m, nil
+			case "e":
 				req, ok := m.dashboard.list.SelectedItem().(store.RequestEntity)
 				if ok {
 					m.resetDashboardModel()
@@ -260,6 +269,7 @@ func (m *model) resetEditModel() {
 	m.edit.confirm.Reset()
 }
 
+// TODO: when in filter mode should disable all keybind but enter or edit
 func (m *model) resetDashboardModel() {
 	m.dashboard.list.ResetSelected()
 	m.dashboard.list.ResetFilter()
