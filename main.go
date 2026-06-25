@@ -35,7 +35,9 @@ const (
 )
 
 type dashboardModel struct {
-	list list.Model
+	list              list.Model
+	methodConfig      selector.Model
+	environmentConfig selector.Model
 }
 
 type editModel struct {
@@ -62,16 +64,8 @@ func initialModel(store *store.Store) model {
 	ti.CharLimit = 128
 	ti.SetWidth(128)
 	ti.Prompt = ""
-	items := []list.Item{}
-	if reqs, err := store.FindRequests(); err != nil {
-		log.Println("InitialModel: ", err)
-	} else {
-		for _, req := range reqs {
-			items = append(items, req)
-		}
-	}
 	l := list.New(
-		items,
+		[]list.Item{},
 		itemDelegate{},
 		60,
 		20,
@@ -97,9 +91,14 @@ func initialModel(store *store.Store) model {
 		}
 	}
 	m := model{
-		store:     store,
-		mode:      Dashboard,
-		dashboard: dashboardModel{list: l},
+		store: store,
+		mode:  Dashboard,
+		dashboard: dashboardModel{
+			list: l,
+			// only used for state management, for for display
+			methodConfig:      selector.New("mthodConfig", []string{"all", "get", "post"}),
+			environmentConfig: selector.New("environmentConfig", []string{"all", "local", "test", "staging", "production"}),
+		},
 		edit: editModel{
 			index:              0,
 			requestMethod:      selector.New("Method", []string{"get", "post"}),
@@ -108,6 +107,9 @@ func initialModel(store *store.Store) model {
 			confirm:            selector.New("", []string{"save", "cancel"}),
 		},
 	}
+	m.tryPopulateListWithDB()
+	m.dashboard.methodConfig.SetValue(config.Method)
+	m.dashboard.environmentConfig.SetValue(config.Environment)
 	isDark := true
 	m.dashboard.list.Styles.Title = lipgloss.NewStyle().MarginLeft(2).Foreground(lipgloss.Color("170"))
 	m.dashboard.list.Styles.PaginationStyle = list.DefaultStyles(isDark).PaginationStyle.PaddingLeft(4)
@@ -126,8 +128,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			switch msg.String() {
 			case "q", "ctrl+c":
 				return m, tea.Quit
-			case "E":
-				return m, nil
 			case "e":
 				req, ok := m.dashboard.list.SelectedItem().(store.RequestEntity)
 				if ok {
@@ -142,6 +142,29 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case "n":
 				m.mode = Edit
 				m.resetDashboardModel()
+				return m, nil
+			// when "E" and "M" success should render list title
+			case "E":
+				m.dashboard.environmentConfig.WrappingNext()
+				newEnvironment := m.dashboard.environmentConfig.Value()
+				if err := m.store.UpdateEnvironmentConfig(newEnvironment); err != nil {
+					m.dashboard.environmentConfig.WrappingPrev() // should restore it's old state
+					return m, nil
+				}
+				config := m.store.FindConfig()
+				m.dashboard.list.Title = fmt.Sprintf("env: %s, method: %s", config.Environment, config.Method)
+				m.tryPopulateListWithDB()
+				return m, nil
+			case "M":
+				m.dashboard.methodConfig.WrappingNext()
+				newMethod := m.dashboard.methodConfig.Value()
+				if err := m.store.UpdateMethodConfig(newMethod); err != nil {
+					m.dashboard.methodConfig.WrappingPrev() // should restore it's old state
+					return m, nil
+				}
+				config := m.store.FindConfig()
+				m.dashboard.list.Title = fmt.Sprintf("env: %s, method: %s", config.Environment, config.Method)
+				m.tryPopulateListWithDB()
 				return m, nil
 			}
 		}
@@ -206,16 +229,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						}); err != nil {
 							log.Println("Update: ", err)
 						} else {
-							// success
-							if reqs, err := m.store.FindRequests(); err != nil {
-								log.Println("Update: ", err)
-							} else {
-								items := []list.Item{}
-								for _, req := range reqs {
-									items = append(items, req)
-								}
-								m.dashboard.list.SetItems(items)
-							}
+							m.tryPopulateListWithDB()
 						}
 					}
 					m.resetEditModel()
@@ -294,6 +308,20 @@ func (d itemDelegate) Render(w io.Writer, m list.Model, index int, listItem list
 	fmt.Fprint(w, str)
 }
 
+// If fail then not populate, handle error inside this function
+func (m *model) tryPopulateListWithDB() {
+	reqs, err := m.store.FindRequests()
+	if err != nil {
+		log.Println("tryPopulateListWithDB: ", err)
+		return
+	}
+	items := []list.Item{}
+	for _, req := range reqs {
+		items = append(items, req)
+	}
+	m.dashboard.list.SetItems(items)
+}
+
 func main() {
 	if len(os.Getenv("DEBUG")) > 0 {
 		f, err := tea.LogToFile("dev.log", "[DEBUG]")
@@ -308,6 +336,7 @@ func main() {
 		fmt.Println("[FATAL] fail to initialize store: ", err)
 		os.Exit(1)
 	}
+	defer store.Close()
 	if _, err := tea.NewProgram(initialModel(store)).Run(); err != nil {
 		fmt.Println("[FATAL] fail to run ghostman: ", err)
 		os.Exit(1)

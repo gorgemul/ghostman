@@ -32,9 +32,23 @@ func (m *Model) Next() {
 	}
 }
 
+func (m *Model) WrappingNext() {
+	m.index++
+	if m.index == len(m.choices) {
+		m.index = 0
+	}
+}
+
 func (m *Model) Prev() {
 	if m.index > 0 {
 		m.index--
+	}
+}
+
+func (m *Model) WrappingPrev() {
+	m.index--
+	if m.index < 0 {
+		m.index = len(m.choices) - 1
 	}
 }
 

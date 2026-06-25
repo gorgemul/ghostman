@@ -10,8 +10,8 @@ import (
 )
 
 var (
-	requestMethodConfig      string
-	requestEnvironmentConfig string
+	requestMethodConfig      = "all"
+	requestEnvironmentConfig = "all"
 )
 
 type RequestEntity struct {
@@ -79,6 +79,10 @@ func New() (*Store, error) {
 	return &Store{db: db}, nil
 }
 
+func (s *Store) Close() {
+	s.db.Close()
+}
+
 func (s *Store) FindRequests() ([]RequestEntity, error) {
 	var (
 		reqs []RequestEntity
@@ -86,13 +90,13 @@ func (s *Store) FindRequests() ([]RequestEntity, error) {
 		err  error
 	)
 	log.Printf("FindRequests config:%v, env: %v\n", requestMethodConfig, requestEnvironmentConfig)
-	if requestMethodConfig == "" && requestEnvironmentConfig == "" {
+	if requestMethodConfig == "all" && requestEnvironmentConfig == "all" {
 		rows, err = s.db.Query(`SELECT id, url, method, environment, "createdAt", "updatedAt" FROM requests;`)
-	} else if requestMethodConfig == "" {
+	} else if requestMethodConfig == "all" {
 		rows, err = s.db.Query(`SELECT id, url, method, environment, "createdAt", "updatedAt" FROM requests WHERE environment = ?;`, requestEnvironmentConfig)
-	} else if requestEnvironmentConfig == "" {
+	} else if requestEnvironmentConfig == "all" {
 		rows, err = s.db.Query(`SELECT id, url, method, environment, "createdAt", "updatedAt" FROM requests WHERE method = ?;`, requestMethodConfig)
-	} else { // both not ""
+	} else { // both not "all"
 		rows, err = s.db.Query(`SELECT id, url, method, environment, "createdAt", "updatedAt" FROM requests WHERE environment = ? AND method = ?;`, requestEnvironmentConfig, requestMethodConfig)
 	}
 	if err != nil {
@@ -152,11 +156,34 @@ func (s *Store) FindConfig() Config {
 	return Config{Method: requestMethodConfig, Environment: requestEnvironmentConfig}
 }
 
+// TODO: set the in-memory config
 func (s *Store) UpdateMethodConfig(newMethod string) error {
+	log.Printf("[UpdateMethodConfig] newMethod=%s\n", newMethod)
+	result, err := s.db.Exec(`UPDATE configs SET "updatedAt" = ?, method = ?;`, time.Now().UTC(), newMethod)
+	if err != nil {
+		return fmt.Errorf("UpdateMethodConfig: %v\n", err)
+	}
+	affectedNum, err := result.RowsAffected()
+	if err != nil || affectedNum == 0 {
+		return fmt.Errorf("UpdateMethodConfig: %v\n", err)
+	}
+	log.Printf("[UpdateMethodConfig] successfully update configs with newMethod=%s\n", newMethod)
+	requestMethodConfig = newMethod
 	return nil
 }
 
 func (s *Store) UpdateEnvironmentConfig(newEnvironment string) error {
+	log.Printf("[UpdateMethodConfig] newEnvironment=%s\n", newEnvironment)
+	result, err := s.db.Exec(`UPDATE configs SET "updatedAt" = ?, environment = ?;`, time.Now().UTC(), newEnvironment)
+	if err != nil {
+		return fmt.Errorf("UpdateEnvironmentConfig: %v\n", err)
+	}
+	affectedNum, err := result.RowsAffected()
+	if err != nil || affectedNum == 0 {
+		return fmt.Errorf("UpdateEnvironmentConfig: %v\n", err)
+	}
+	log.Printf("[UpdateEnvironmentConfig] successfully update configs with newEnvironment=%s\n", newEnvironment)
+	requestEnvironmentConfig = newEnvironment
 	return nil
 }
 
