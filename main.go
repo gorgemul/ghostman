@@ -77,7 +77,6 @@ func initialModel(store *store.Store) model {
 		return []key.Binding{
 			key.NewBinding(key.WithKeys("n"), key.WithHelp("n", "new")),
 			key.NewBinding(key.WithKeys("e"), key.WithHelp("e", "edit")),
-			// TODO: implement this, should change configs data in the db
 			key.NewBinding(key.WithKeys("E"), key.WithHelp("E", "environment")),
 			key.NewBinding(key.WithKeys("M"), key.WithHelp("M", "method")),
 		}
@@ -95,7 +94,7 @@ func initialModel(store *store.Store) model {
 		mode:  Dashboard,
 		dashboard: dashboardModel{
 			list: l,
-			// only used for state management, for for display
+			// only used for state management, not for display
 			methodConfig:      selector.New("mthodConfig", []string{"all", "get", "post"}),
 			environmentConfig: selector.New("environmentConfig", []string{"all", "local", "test", "staging", "production"}),
 		},
@@ -143,7 +142,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.mode = Edit
 				m.resetDashboardModel()
 				return m, nil
-			// when "E" and "M" success should render list title
 			case "E":
 				m.dashboard.environmentConfig.WrappingNext()
 				newEnvironment := m.dashboard.environmentConfig.Value()

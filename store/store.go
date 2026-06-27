@@ -156,7 +156,6 @@ func (s *Store) FindConfig() Config {
 	return Config{Method: requestMethodConfig, Environment: requestEnvironmentConfig}
 }
 
-// TODO: set the in-memory config
 func (s *Store) UpdateMethodConfig(newMethod string) error {
 	log.Printf("[UpdateMethodConfig] newMethod=%s\n", newMethod)
 	result, err := s.db.Exec(`UPDATE configs SET "updatedAt" = ?, method = ?;`, time.Now().UTC(), newMethod)
