@@ -1,9 +1,12 @@
 package main
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log"
+	"net/http"
 	"os"
 	"strings"
 
@@ -13,6 +16,7 @@ import (
 	"charm.land/bubbles/v2/key"
 	"charm.land/bubbles/v2/list"
 	"charm.land/bubbles/v2/textinput"
+	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 )
@@ -32,6 +36,7 @@ const (
 	// TODO: should provide help message in Edit mode
 	Edit
 	// TODO: should do a view mode when enter to view a list
+	Result
 )
 
 type dashboardModel struct {
@@ -49,11 +54,16 @@ type editModel struct {
 	confirm            selector.Model
 }
 
+type resultModel struct {
+	view viewport.Model
+}
+
 type model struct {
 	store     *store.Store
 	mode      Mode
 	dashboard dashboardModel // Mode == Dashboard
 	edit      editModel      // Mode == Edit
+	result    resultModel
 }
 
 type itemDelegate struct{}
@@ -105,43 +115,47 @@ func initialModel(store *store.Store) model {
 			urlInput:           ti,
 			confirm:            selector.New("", []string{"save", "cancel"}),
 		},
+		result: resultModel{view: viewport.New()},
 	}
 	m.tryPopulateListWithDB()
 	m.dashboard.methodConfig.SetValue(config.Method)
 	m.dashboard.environmentConfig.SetValue(config.Environment)
-	isDark := true
-	m.dashboard.list.Styles.Title = lipgloss.NewStyle().MarginLeft(2).Foreground(lipgloss.Color("170"))
-	m.dashboard.list.Styles.PaginationStyle = list.DefaultStyles(isDark).PaginationStyle.PaddingLeft(4)
-	m.dashboard.list.Styles.HelpStyle = list.DefaultStyles(isDark).HelpStyle.PaddingLeft(4).PaddingBottom(2)
+	m.dashboard.list.Styles.Title = lipgloss.NewStyle().Foreground(lipgloss.Color("255"))
 	m.dashboard.list.SetDelegate(itemDelegate{})
 	return m
 }
 
 func (m model) Init() tea.Cmd { return nil }
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if msg, ok := msg.(tea.WindowSizeMsg); ok {
+		m.result.view.SetWidth(msg.Width)
+		m.result.view.SetHeight(msg.Height)
+		m.dashboard.list.SetSize(msg.Width, msg.Height)
+	}
 	switch m.mode {
 	case Dashboard:
 		switch msg := msg.(type) {
 		case tea.KeyPressMsg:
-			// TODO: should add a add/update mode for create entry for url, sqlite3 would be great for store
 			switch msg.String() {
 			case "q", "ctrl+c":
 				return m, tea.Quit
 			case "e":
-				req, ok := m.dashboard.list.SelectedItem().(store.RequestEntity)
-				if ok {
-					m.resetDashboardModel()
-					m.edit.requestId = &req.Id
-					m.edit.requestMethod.SetValue(req.Method)
-					m.edit.requestEnvironment.SetValue(req.Environment)
-					m.edit.urlInput.SetValue(req.Url)
-					m.mode = Edit
+				if !m.dashboard.list.SettingFilter() {
+					req, ok := m.dashboard.list.SelectedItem().(store.RequestEntity)
+					if ok {
+						m.resetDashboardModel()
+						m.edit.requestId = &req.Id
+						m.edit.requestMethod.SetValue(req.Method)
+						m.edit.requestEnvironment.SetValue(req.Environment)
+						m.edit.urlInput.SetValue(req.Url)
+						m.mode = Edit
+					}
 				}
-				return m, nil
 			case "n":
-				m.mode = Edit
-				m.resetDashboardModel()
-				return m, nil
+				if !m.dashboard.list.SettingFilter() {
+					m.mode = Edit
+					m.resetDashboardModel()
+				}
 			case "E":
 				m.dashboard.environmentConfig.WrappingNext()
 				newEnvironment := m.dashboard.environmentConfig.Value()
@@ -163,6 +177,21 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				config := m.store.FindConfig()
 				m.dashboard.list.Title = fmt.Sprintf("env: %s, method: %s", config.Environment, config.Method)
 				m.tryPopulateListWithDB()
+				return m, nil
+			case "enter":
+				req, ok := m.dashboard.list.SelectedItem().(store.RequestEntity)
+				if ok {
+					content, err := m.doRequest(req)
+					if err != nil {
+						log.Printf("doRequest: %v", err)
+						return m, nil
+					}
+					m.resetDashboardModel()
+					m.result.view.SetContent(content)
+					m.result.view.SetWidth(m.dashboard.list.Width())
+					m.result.view.SetHeight(m.dashboard.list.Height())
+					m.mode = Result
+				}
 				return m, nil
 			}
 		}
@@ -244,6 +273,18 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		var cmd tea.Cmd
 		m.edit.urlInput, cmd = m.edit.urlInput.Update(msg)
 		return m, cmd
+	case Result:
+		switch msg := msg.(type) {
+		case tea.KeyPressMsg:
+			switch msg.String() {
+			case "q", "ctrl+c", "esc":
+				m.mode = Dashboard
+				return m, nil
+			}
+		}
+		var cmd tea.Cmd
+		m.result.view, cmd = m.result.view.Update(msg)
+		return m, cmd
 	}
 	return m, nil
 }
@@ -262,12 +303,16 @@ func (m model) View() tea.View {
 			if m.edit.urlInput.Focused() {
 				color = "170"
 			}
-			sb.WriteString(lipgloss.NewStyle().PaddingLeft(2).Foreground(lipgloss.Color(color)).Render("> Url: " + m.edit.urlInput.View()))
+			sb.WriteString(lipgloss.NewStyle().PaddingLeft(0).Foreground(lipgloss.Color(color)).Render(">Url: " + m.edit.urlInput.View()))
 		} else {
-			sb.WriteString(lipgloss.NewStyle().PaddingLeft(4).Render("Url: " + m.edit.urlInput.View()))
+			sb.WriteString(lipgloss.NewStyle().PaddingLeft(1).Render("Url: " + m.edit.urlInput.View()))
 		}
 		sb.WriteString(lipgloss.NewStyle().PaddingTop(1).Render(m.edit.confirm.View(m.edit.index == ConfirmSelectorIndex)))
 		return tea.NewView(lipgloss.NewStyle().PaddingTop(1).Render(sb.String()))
+	case Result:
+		v := tea.NewView(m.result.view.View())
+		v.AltScreen = true
+		return v
 	}
 	return tea.NewView("[ERROR] should never reach here")
 }
@@ -291,19 +336,20 @@ func (d itemDelegate) Height() int                             { return 1 }
 func (d itemDelegate) Spacing() int                            { return 0 }
 func (d itemDelegate) Update(_ tea.Msg, _ *list.Model) tea.Cmd { return nil }
 func (d itemDelegate) Render(w io.Writer, m list.Model, index int, listItem list.Item) {
-	i, ok := listItem.(store.RequestEntity)
+	req, ok := listItem.(store.RequestEntity)
 	if !ok {
 		return
 	}
-	str := fmt.Sprintf("%s", i.Url)
+	str := req.Url
+	suffix := lipgloss.NewStyle().PaddingLeft(0).Foreground(lipgloss.Color("246")).Render(fmt.Sprintf("  [%s] [%s]", req.Environment, req.Method))
 
 	if index == m.Index() {
-		str = lipgloss.NewStyle().PaddingLeft(2).Foreground(lipgloss.Color("170")).Render("> " + str)
+		str = lipgloss.NewStyle().Foreground(lipgloss.Color("170")).Render(">" + str)
 	} else {
-		str = lipgloss.NewStyle().PaddingLeft(4).Render(str)
+		str = lipgloss.NewStyle().PaddingLeft(1).Render(str)
 	}
 
-	fmt.Fprint(w, str)
+	fmt.Fprint(w, str+suffix)
 }
 
 // If fail then not populate, handle error inside this function
@@ -318,6 +364,34 @@ func (m *model) tryPopulateListWithDB() {
 		items = append(items, req)
 	}
 	m.dashboard.list.SetItems(items)
+}
+
+func (m *model) doRequest(req store.RequestEntity) (string, error) {
+	// TODO: later should support other method
+	// TODO: later may set support setting the header
+	var res *http.Response
+	var err error
+	switch req.Method {
+	case "post":
+		res, err = http.Post(req.Url, "application/json", nil)
+	case "get":
+		res, err = http.Get(req.Url)
+	default:
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	defer res.Body.Close()
+	body, err := io.ReadAll(res.Body)
+	if err != nil {
+		return "", err
+	}
+	var indentedJSONContent bytes.Buffer
+	if err := json.Indent(&indentedJSONContent, body, "", "  "); err != nil {
+		return "", err
+	}
+	return indentedJSONContent.String(), nil
 }
 
 func main() {

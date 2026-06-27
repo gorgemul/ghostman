@@ -84,8 +84,8 @@ func (m Model) View(inCurrentRow bool) string {
 		fmt.Fprintf(&sb, "%s%s%s", selected, choice, separator)
 	}
 	if inCurrentRow {
-		return lipgloss.NewStyle().PaddingLeft(2).Foreground(lipgloss.Color("170")).Render("> "+sb.String()) + "\n"
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("170")).Render(">"+sb.String()) + "\n"
 	} else {
-		return lipgloss.NewStyle().PaddingLeft(4).Render(sb.String()) + "\n"
+		return lipgloss.NewStyle().PaddingLeft(1).Render(sb.String()) + "\n"
 	}
 }
