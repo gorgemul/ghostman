@@ -15,6 +15,7 @@ import (
 
 	"charm.land/bubbles/v2/key"
 	"charm.land/bubbles/v2/list"
+	"charm.land/bubbles/v2/textarea"
 	"charm.land/bubbles/v2/textinput"
 	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
@@ -25,7 +26,8 @@ const (
 	RequestMethodSelectorIndex int = iota
 	RequestEnvironmentSelectorIndex
 	UrlInputIndex
-	// TODO: handle dynamic row like header and body
+	QueryParamInputIndex
+	BodyInputIndex
 	ConfirmSelectorIndex
 )
 
@@ -35,8 +37,9 @@ const (
 	Dashboard Mode = iota
 	// TODO: should provide help message in Edit mode
 	Edit
-	// TODO: should do a view mode when enter to view a list
 	Result
+	// TODO: Better name
+	ParamEdit
 )
 
 type dashboardModel struct {
@@ -51,11 +54,15 @@ type editModel struct {
 	requestMethod      selector.Model
 	requestEnvironment selector.Model
 	urlInput           textinput.Model
-	confirm            selector.Model
+	confirm            selector.Model // TODO: maybe just keep it as cmd+s or ctrl + s to save
 }
 
 type resultModel struct {
 	view viewport.Model
+}
+
+type paramEditModel struct {
+	inputArea textarea.Model
 }
 
 type model struct {
@@ -63,17 +70,13 @@ type model struct {
 	mode      Mode
 	dashboard dashboardModel // Mode == Dashboard
 	edit      editModel      // Mode == Edit
-	result    resultModel
+	result    resultModel    // Mode == Result
+	paramEdit paramEditModel // Mode == ParamEdit
 }
 
 type itemDelegate struct{}
 
 func initialModel(store *store.Store) model {
-	ti := textinput.New()
-	ti.Placeholder = "Please input url"
-	ti.CharLimit = 128
-	ti.SetWidth(128)
-	ti.Prompt = ""
 	l := list.New(
 		[]list.Item{},
 		itemDelegate{},
@@ -99,6 +102,14 @@ func initialModel(store *store.Store) model {
 			key.NewBinding(key.WithKeys("M"), key.WithHelp("M", "method")),
 		}
 	}
+	ti := textinput.New()
+	ti.CharLimit = 128
+	ti.SetWidth(128)
+	ti.Prompt = ""
+	ta := textarea.New()
+	s := ta.Styles()
+	s.Cursor.Blink = false
+	ta.SetStyles(s)
 	m := model{
 		store: store,
 		mode:  Dashboard,
@@ -115,7 +126,8 @@ func initialModel(store *store.Store) model {
 			urlInput:           ti,
 			confirm:            selector.New("", []string{"save", "cancel"}),
 		},
-		result: resultModel{view: viewport.New()},
+		result:    resultModel{view: viewport.New()},
+		paramEdit: paramEditModel{inputArea: ta},
 	}
 	m.tryPopulateListWithDB()
 	m.dashboard.methodConfig.SetValue(config.Method)
@@ -186,7 +198,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						log.Printf("doRequest: %v", err)
 						return m, nil
 					}
-					m.resetDashboardModel()
 					m.result.view.SetContent(content)
 					m.result.view.SetWidth(m.dashboard.list.Width())
 					m.result.view.SetHeight(m.dashboard.list.Height())
@@ -247,7 +258,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						m.edit.urlInput.Focus()
 					}
 				case ConfirmSelectorIndex:
-					if m.edit.confirm.Value() == "save" {
+					if m.edit.confirm.Value() == "save" && len(m.edit.urlInput.Value()) > 0 {
 						if _, err := m.store.UpsertRequest(store.UpsertRequestParams{
 							Id:          m.edit.requestId,
 							Url:         m.edit.urlInput.Value(),
@@ -298,17 +309,36 @@ func (m model) View() tea.View {
 		sb.WriteString(m.edit.requestMethod.View(m.edit.index == RequestMethodSelectorIndex))
 		sb.WriteString(m.edit.requestEnvironment.View(m.edit.index == RequestEnvironmentSelectorIndex))
 		// TODO: in get url and has query parameters should reflect that in the url?
+		urlInputColor := "255"
+		urlInputTitle := "Url: "
+		urlInputPaddingLeft := 1
 		if m.edit.index == UrlInputIndex {
-			color := "255"
 			if m.edit.urlInput.Focused() {
-				color = "170"
+				urlInputColor = "170"
 			}
-			sb.WriteString(lipgloss.NewStyle().PaddingLeft(0).Foreground(lipgloss.Color(color)).Render(">Url: " + m.edit.urlInput.View()))
-		} else {
-			sb.WriteString(lipgloss.NewStyle().PaddingLeft(1).Render("Url: " + m.edit.urlInput.View()))
+			urlInputTitle = ">" + urlInputTitle
+			urlInputPaddingLeft = 0
 		}
-		sb.WriteString(lipgloss.NewStyle().PaddingTop(1).Render(m.edit.confirm.View(m.edit.index == ConfirmSelectorIndex)))
-		return tea.NewView(lipgloss.NewStyle().PaddingTop(1).Render(sb.String()))
+		sb.WriteString(lipgloss.NewStyle().PaddingLeft(urlInputPaddingLeft).Foreground(lipgloss.Color(urlInputColor)).Render(urlInputTitle + m.edit.urlInput.View()))
+		sb.WriteByte('\n')
+		queryParamInputTitle := "QueryParameter: "
+		queryParamInputPaddingLeft := 1
+		if m.edit.index == QueryParamInputIndex {
+			queryParamInputTitle = ">" + queryParamInputTitle
+			queryParamInputPaddingLeft = 0
+		}
+		sb.WriteString(lipgloss.NewStyle().PaddingLeft(queryParamInputPaddingLeft).Render(queryParamInputTitle))
+		sb.WriteByte('\n')
+		bodyInputTitle := "Body: "
+		bodyInputPaddingLeft := 1
+		if m.edit.index == BodyInputIndex {
+			bodyInputTitle = ">" + bodyInputTitle
+			bodyInputPaddingLeft = 0
+		}
+		sb.WriteString(lipgloss.NewStyle().PaddingLeft(bodyInputPaddingLeft).Render(bodyInputTitle))
+		sb.WriteByte('\n')
+		sb.WriteString(lipgloss.NewStyle().Render(m.edit.confirm.View(m.edit.index == ConfirmSelectorIndex)))
+		return tea.NewView(lipgloss.NewStyle().Render(sb.String()))
 	case Result:
 		v := tea.NewView(m.result.view.View())
 		v.AltScreen = true
@@ -366,6 +396,16 @@ func (m *model) tryPopulateListWithDB() {
 	m.dashboard.list.SetItems(items)
 }
 
+/*
+TODO:
+  - GET
+    1. Query string parameters — ?key=value&key2=value2 after the URL path
+    2. Support dynamic path parameter in
+    3. When type in url with query string params, should also relect on the params
+  - POST
+    1. request body support
+    2. also has query string parameters
+*/
 func (m *model) doRequest(req store.RequestEntity) (string, error) {
 	// TODO: later should support other method
 	// TODO: later may set support setting the header
