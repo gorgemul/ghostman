@@ -23,12 +23,12 @@ import (
 )
 
 const (
-	RequestMethodSelectorIndex int = iota
-	RequestEnvironmentSelectorIndex
-	UrlInputIndex
-	QueryParamInputIndex
-	BodyInputIndex
-	ConfirmSelectorIndex
+	MethodIndex int = iota
+	EnvironmentIndex
+	UrlIndex
+	QueryParamsIndex
+	BodyIndex
+	ConfirmIndex
 )
 
 type Mode int
@@ -49,12 +49,12 @@ type dashboardModel struct {
 }
 
 type editModel struct {
-	requestId          *int64 // to differenciate insert and update in edit mode
-	index              int
-	requestMethod      selector.Model
-	requestEnvironment selector.Model
-	urlInput           textinput.Model
-	confirm            selector.Model // TODO: maybe just keep it as cmd+s or ctrl + s to save
+	index       int
+	id          *int64 // to differenciate insert and update in edit mode
+	method      selector.Model
+	environment selector.Model
+	url         textinput.Model
+	confirm     selector.Model // TODO: maybe just keep it as cmd+s or ctrl + s to save
 }
 
 type resultModel struct {
@@ -104,11 +104,11 @@ func initialModel(store *store.Store) model {
 			key.NewBinding(key.WithKeys("M"), key.WithHelp("M", "method")),
 		}
 	}
-	urlInput := textinput.New()
-	urlInput.CharLimit = 128
-	urlInput.SetWidth(128)
-	urlInput.Prompt = ""
-	urlInput.Placeholder = "NULL"
+	url := textinput.New()
+	url.CharLimit = 128
+	url.SetWidth(128)
+	url.Prompt = ""
+	url.Placeholder = "NULL"
 	queryParamInput := textarea.New()
 	queryParamInput.SetHeight(20)
 	queryParamInputStyles := queryParamInput.Styles()
@@ -129,11 +129,11 @@ func initialModel(store *store.Store) model {
 			environmentConfig: selector.New("environmentConfig", []string{"all", "local", "test", "staging", "production"}),
 		},
 		edit: editModel{
-			index:              0,
-			requestMethod:      selector.New("Method", []string{"get", "post"}),
-			requestEnvironment: selector.New("Environment", []string{"local", "test", "staging", "production"}),
-			urlInput:           urlInput,
-			confirm:            selector.New("", []string{"save", "cancel"}),
+			index:       0,
+			method:      selector.New("Method", []string{"get", "post"}),
+			environment: selector.New("Environment", []string{"local", "test", "staging", "production"}),
+			url:         url,
+			confirm:     selector.New("", []string{"save", "cancel"}),
 		},
 		result:    resultModel{view: viewport.New()},
 		paramEdit: paramEditModel{queryParamInput: queryParamInput, bodyInput: bodyInput},
@@ -166,10 +166,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if !m.dashboard.list.SettingFilter() {
 					req, ok := m.dashboard.list.SelectedItem().(store.RequestEntity)
 					if ok {
-						m.edit.requestId = &req.Id
-						m.edit.requestMethod.SetValue(req.Method)
-						m.edit.requestEnvironment.SetValue(req.Environment)
-						m.edit.urlInput.SetValue(req.Url)
+						m.edit.id = &req.Id
+						m.edit.method.SetValue(req.Method)
+						m.edit.environment.SetValue(req.Environment)
+						m.edit.url.SetValue(req.Url)
 						// TODO: too much code duplicate
 						queryParamsText := req.QueryParams
 						queryParams := make(map[string]any)
@@ -251,65 +251,65 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case Edit:
 		switch msg := msg.(type) {
 		case tea.PasteMsg:
-			if m.edit.urlInput.Focused() {
+			if m.edit.url.Focused() {
 				var cmd tea.Cmd
-				m.edit.urlInput, cmd = m.edit.urlInput.Update(msg)
+				m.edit.url, cmd = m.edit.url.Update(msg)
 				return m, cmd
 			}
 		case tea.KeyPressMsg:
 			switch msg.String() {
 			case "j", "down":
-				if m.edit.index < ConfirmSelectorIndex && !m.edit.urlInput.Focused() {
+				if m.edit.index < ConfirmIndex && !m.edit.url.Focused() {
 					m.edit.index++
 				}
 			case "k", "up":
 				// TODO: maybe need to change when adding headers and body
-				if m.edit.index > 0 && !m.edit.urlInput.Focused() {
+				if m.edit.index > 0 && !m.edit.url.Focused() {
 					m.edit.index--
 				}
 			case "l", "right":
 				switch m.edit.index {
-				case RequestMethodSelectorIndex:
-					m.edit.requestMethod.Next()
-				case RequestEnvironmentSelectorIndex:
-					m.edit.requestEnvironment.Next()
-				case ConfirmSelectorIndex:
+				case MethodIndex:
+					m.edit.method.Next()
+				case EnvironmentIndex:
+					m.edit.environment.Next()
+				case ConfirmIndex:
 					m.edit.confirm.Next()
 				}
 			case "h", "left":
 				switch m.edit.index {
-				case RequestMethodSelectorIndex:
-					m.edit.requestMethod.Prev()
-				case RequestEnvironmentSelectorIndex:
-					m.edit.requestEnvironment.Prev()
-				case ConfirmSelectorIndex:
+				case MethodIndex:
+					m.edit.method.Prev()
+				case EnvironmentIndex:
+					m.edit.environment.Prev()
+				case ConfirmIndex:
 					m.edit.confirm.Prev()
 				}
 			// not doing any return in above case, when we should not shadow key when user input
 			case "enter":
 				switch m.edit.index {
-				case RequestMethodSelectorIndex, RequestEnvironmentSelectorIndex:
+				case MethodIndex, EnvironmentIndex:
 					m.edit.index++
-				case UrlInputIndex:
-					if m.edit.urlInput.Focused() {
-						m.edit.urlInput.Blur()
+				case UrlIndex:
+					if m.edit.url.Focused() {
+						m.edit.url.Blur()
 					} else {
-						m.edit.urlInput.Focus()
+						m.edit.url.Focus()
 					}
-				case QueryParamInputIndex:
+				case QueryParamsIndex:
 					m.paramEdit.queryParamInput.Focus()
 					m.mode = ParamEdit
 					// TODO: set value from db
-				case BodyInputIndex:
+				case BodyIndex:
 					m.paramEdit.bodyInput.Focus()
 					m.mode = ParamEdit
-				case ConfirmSelectorIndex:
-					if m.edit.confirm.Value() == "save" && len(m.edit.urlInput.Value()) > 0 {
+				case ConfirmIndex:
+					if m.edit.confirm.Value() == "save" && len(m.edit.url.Value()) > 0 {
 						if _, err := m.store.UpsertRequest(store.UpsertRequestParams{
-							Id:          m.edit.requestId,
-							Url:         m.edit.urlInput.Value(),
-							Method:      m.edit.requestMethod.Value(),
-							Environment: m.edit.requestEnvironment.Value(),
+							Id:          m.edit.id,
+							Url:         m.edit.url.Value(),
+							Method:      m.edit.method.Value(),
+							Environment: m.edit.environment.Value(),
 							QueryParams: textareaContentAsJSON(&m.paramEdit.queryParamInput),
 							Body:        textareaContentAsJSON(&m.paramEdit.bodyInput),
 						}); err != nil {
@@ -323,8 +323,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				return m, nil
 			case "esc", "ctrl+c":
-				if m.edit.index == UrlInputIndex && m.edit.urlInput.Focused() {
-					m.edit.urlInput.Blur()
+				if m.edit.index == UrlIndex && m.edit.url.Focused() {
+					m.edit.url.Blur()
 					return m, nil
 				}
 				m.resetEditModel()
@@ -333,7 +333,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		var cmd tea.Cmd
-		m.edit.urlInput, cmd = m.edit.urlInput.Update(msg)
+		m.edit.url, cmd = m.edit.url.Update(msg)
 		return m, cmd
 	case Result:
 		switch msg := msg.(type) {
@@ -355,9 +355,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.mode = Edit
 				var input *textarea.Model
 				switch m.edit.index {
-				case QueryParamInputIndex:
+				case QueryParamsIndex:
 					input = &m.paramEdit.queryParamInput
-				case BodyInputIndex:
+				case BodyIndex:
 					input = &m.paramEdit.bodyInput
 				}
 				v := input.Value()
@@ -374,9 +374,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		var cmd tea.Cmd
 		switch m.edit.index {
-		case QueryParamInputIndex:
+		case QueryParamsIndex:
 			m.paramEdit.queryParamInput, cmd = m.paramEdit.queryParamInput.Update(msg)
-		case BodyInputIndex:
+		case BodyIndex:
 			m.paramEdit.bodyInput, cmd = m.paramEdit.bodyInput.Update(msg)
 		}
 		return m, cmd
@@ -390,24 +390,24 @@ func (m model) View() tea.View {
 		return tea.NewView("\n" + m.dashboard.list.View())
 	case Edit:
 		var sb strings.Builder
-		sb.WriteString(m.edit.requestMethod.View(m.edit.index == RequestMethodSelectorIndex))
-		sb.WriteString(m.edit.requestEnvironment.View(m.edit.index == RequestEnvironmentSelectorIndex))
+		sb.WriteString(m.edit.method.View(m.edit.index == MethodIndex))
+		sb.WriteString(m.edit.environment.View(m.edit.index == EnvironmentIndex))
 		// TODO: in get url and has query parameters should reflect that in the url?
-		urlInputColor := "255"
-		urlInputTitle := "Url: "
-		urlInputPaddingLeft := 1
-		if m.edit.index == UrlInputIndex {
-			if m.edit.urlInput.Focused() {
-				urlInputColor = "170"
+		urlColor := "255"
+		urlTitle := "Url: "
+		urlPaddingLeft := 1
+		if m.edit.index == UrlIndex {
+			if m.edit.url.Focused() {
+				urlColor = "170"
 			}
-			urlInputTitle = ">" + urlInputTitle
-			urlInputPaddingLeft = 0
+			urlTitle = ">" + urlTitle
+			urlPaddingLeft = 0
 		}
-		sb.WriteString(lipgloss.NewStyle().PaddingLeft(urlInputPaddingLeft).Foreground(lipgloss.Color(urlInputColor)).Render(urlInputTitle + m.edit.urlInput.View()))
+		sb.WriteString(lipgloss.NewStyle().PaddingLeft(urlPaddingLeft).Foreground(lipgloss.Color(urlColor)).Render(urlTitle + m.edit.url.View()))
 		sb.WriteByte('\n')
 		queryParamInputTitle := "QueryParameter: "
 		queryParamInputPaddingLeft := 1
-		if m.edit.index == QueryParamInputIndex {
+		if m.edit.index == QueryParamsIndex {
 			queryParamInputTitle = ">" + queryParamInputTitle
 			queryParamInputPaddingLeft = 0
 		}
@@ -435,7 +435,7 @@ func (m model) View() tea.View {
 		sb.WriteByte('\n')
 		bodyInputTitle := "Body: "
 		bodyInputPaddingLeft := 1
-		if m.edit.index == BodyInputIndex {
+		if m.edit.index == BodyIndex {
 			bodyInputTitle = ">" + bodyInputTitle
 			bodyInputPaddingLeft = 0
 		}
@@ -460,7 +460,7 @@ func (m model) View() tea.View {
 		}
 		sb.WriteString(lipgloss.NewStyle().PaddingLeft(bodyInputPaddingLeft).Render(bodyInputTitle + bodyInputContent.String()))
 		sb.WriteByte('\n')
-		sb.WriteString(lipgloss.NewStyle().Render(m.edit.confirm.View(m.edit.index == ConfirmSelectorIndex)))
+		sb.WriteString(lipgloss.NewStyle().Render(m.edit.confirm.View(m.edit.index == ConfirmIndex)))
 		return tea.NewView(lipgloss.NewStyle().Render(sb.String()))
 	case Result:
 		v := tea.NewView(m.result.view.View())
@@ -468,9 +468,9 @@ func (m model) View() tea.View {
 		return v
 	case ParamEdit:
 		switch m.edit.index {
-		case QueryParamInputIndex:
+		case QueryParamsIndex:
 			return tea.NewView(m.paramEdit.queryParamInput.View())
-		case BodyInputIndex:
+		case BodyIndex:
 			return tea.NewView(m.paramEdit.bodyInput.View())
 		}
 	}
@@ -478,11 +478,11 @@ func (m model) View() tea.View {
 }
 
 func (m *model) resetEditModel() {
-	m.edit.requestId = nil
+	m.edit.id = nil
 	m.edit.index = 0
-	m.edit.requestMethod.Reset()
-	m.edit.requestEnvironment.Reset()
-	m.edit.urlInput.Reset()
+	m.edit.method.Reset()
+	m.edit.environment.Reset()
+	m.edit.url.Reset()
 	m.edit.confirm.Reset()
 	m.paramEdit.queryParamInput.Reset()
 	m.paramEdit.bodyInput.Reset()
