@@ -62,9 +62,11 @@ type resultModel struct {
 }
 
 type paramEditModel struct {
-	inputArea textarea.Model
+	queryParamInput textarea.Model
+	bodyInput       textarea.Model
 }
 
+// TODO: paramEdit mode should put inside edit mode
 type model struct {
 	store     *store.Store
 	mode      Mode
@@ -102,14 +104,21 @@ func initialModel(store *store.Store) model {
 			key.NewBinding(key.WithKeys("M"), key.WithHelp("M", "method")),
 		}
 	}
-	ti := textinput.New()
-	ti.CharLimit = 128
-	ti.SetWidth(128)
-	ti.Prompt = ""
-	ta := textarea.New()
-	s := ta.Styles()
-	s.Cursor.Blink = false
-	ta.SetStyles(s)
+	urlInput := textinput.New()
+	urlInput.CharLimit = 128
+	urlInput.SetWidth(128)
+	urlInput.Prompt = ""
+	urlInput.Placeholder = "NULL"
+	queryParamInput := textarea.New()
+	queryParamInput.SetHeight(20)
+	queryParamInputStyles := queryParamInput.Styles()
+	queryParamInputStyles.Cursor.Blink = false
+	queryParamInput.SetStyles(queryParamInputStyles)
+	bodyInput := textarea.New()
+	bodyInput.SetHeight(20)
+	bodyInputStyles := bodyInput.Styles()
+	bodyInputStyles.Cursor.Blink = false
+	bodyInput.SetStyles(bodyInputStyles)
 	m := model{
 		store: store,
 		mode:  Dashboard,
@@ -123,11 +132,11 @@ func initialModel(store *store.Store) model {
 			index:              0,
 			requestMethod:      selector.New("Method", []string{"get", "post"}),
 			requestEnvironment: selector.New("Environment", []string{"local", "test", "staging", "production"}),
-			urlInput:           ti,
+			urlInput:           urlInput,
 			confirm:            selector.New("", []string{"save", "cancel"}),
 		},
 		result:    resultModel{view: viewport.New()},
-		paramEdit: paramEditModel{inputArea: ta},
+		paramEdit: paramEditModel{queryParamInput: queryParamInput, bodyInput: bodyInput},
 	}
 	m.tryPopulateListWithDB()
 	m.dashboard.methodConfig.SetValue(config.Method)
@@ -140,9 +149,11 @@ func initialModel(store *store.Store) model {
 func (m model) Init() tea.Cmd { return nil }
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if msg, ok := msg.(tea.WindowSizeMsg); ok {
+		m.dashboard.list.SetSize(msg.Width, msg.Height)
 		m.result.view.SetWidth(msg.Width)
 		m.result.view.SetHeight(msg.Height)
-		m.dashboard.list.SetSize(msg.Width, msg.Height)
+		m.paramEdit.queryParamInput.SetWidth(msg.Width)
+		m.paramEdit.bodyInput.SetWidth(msg.Width)
 	}
 	switch m.mode {
 	case Dashboard:
@@ -155,11 +166,38 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if !m.dashboard.list.SettingFilter() {
 					req, ok := m.dashboard.list.SelectedItem().(store.RequestEntity)
 					if ok {
-						m.resetDashboardModel()
 						m.edit.requestId = &req.Id
 						m.edit.requestMethod.SetValue(req.Method)
 						m.edit.requestEnvironment.SetValue(req.Environment)
 						m.edit.urlInput.SetValue(req.Url)
+						// TODO: too much code duplicate
+						queryParamsText := req.QueryParams
+						queryParams := make(map[string]any)
+						var queryParamsInputContent strings.Builder
+						if err := json.Unmarshal([]byte(queryParamsText), &queryParams); err == nil {
+							for k, v := range queryParams {
+								// TODO: how to handle object/array
+								fmt.Fprintf(&queryParamsInputContent, "%v\n%v\n", k, v)
+							}
+						}
+						queryParamsTrim := queryParamsInputContent.String()
+						if len(queryParamsTrim) > 0 {
+							queryParamsTrim = queryParamsTrim[:len(queryParamsTrim)-1]
+						}
+						m.paramEdit.queryParamInput.SetValue(queryParamsTrim)
+						bodyText := req.Body
+						body := make(map[string]any)
+						var bodyInputContent strings.Builder
+						if err := json.Unmarshal([]byte(bodyText), &body); err == nil {
+							for k, v := range body {
+								fmt.Fprintf(&bodyInputContent, "%v\n%v\n", k, v)
+							}
+						}
+						bodyTrim := bodyInputContent.String()
+						if len(bodyTrim) > 0 {
+							bodyTrim = bodyTrim[:len(bodyTrim)-1]
+						}
+						m.paramEdit.bodyInput.SetValue(bodyTrim)
 						m.mode = Edit
 					}
 				}
@@ -191,6 +229,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.tryPopulateListWithDB()
 				return m, nil
 			case "enter":
+				// TODO: should add a buffering status in the view mode, since right now could triger multiple requests by hitting enter
 				req, ok := m.dashboard.list.SelectedItem().(store.RequestEntity)
 				if ok {
 					content, err := m.doRequest(req)
@@ -198,9 +237,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						log.Printf("doRequest: %v", err)
 						return m, nil
 					}
-					m.result.view.SetContent(content)
-					m.result.view.SetWidth(m.dashboard.list.Width())
-					m.result.view.SetHeight(m.dashboard.list.Height())
+					width := m.result.view.Width()
+					warpppedContent := lipgloss.NewStyle().Width(width).Render(content)
+					m.result.view.SetContent(warpppedContent)
 					m.mode = Result
 				}
 				return m, nil
@@ -257,6 +296,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					} else {
 						m.edit.urlInput.Focus()
 					}
+				case QueryParamInputIndex:
+					m.paramEdit.queryParamInput.Focus()
+					m.mode = ParamEdit
+					// TODO: set value from db
+				case BodyInputIndex:
+					m.paramEdit.bodyInput.Focus()
+					m.mode = ParamEdit
 				case ConfirmSelectorIndex:
 					if m.edit.confirm.Value() == "save" && len(m.edit.urlInput.Value()) > 0 {
 						if _, err := m.store.UpsertRequest(store.UpsertRequestParams{
@@ -264,6 +310,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 							Url:         m.edit.urlInput.Value(),
 							Method:      m.edit.requestMethod.Value(),
 							Environment: m.edit.requestEnvironment.Value(),
+							QueryParams: textareaContentAsJSON(&m.paramEdit.queryParamInput),
+							Body:        textareaContentAsJSON(&m.paramEdit.bodyInput),
 						}); err != nil {
 							log.Println("Update: ", err)
 						} else {
@@ -279,6 +327,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.edit.urlInput.Blur()
 					return m, nil
 				}
+				m.resetEditModel()
+				m.mode = Dashboard
+				return m, nil
 			}
 		}
 		var cmd tea.Cmd
@@ -295,6 +346,39 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		var cmd tea.Cmd
 		m.result.view, cmd = m.result.view.Update(msg)
+		return m, cmd
+	case ParamEdit:
+		switch msg := msg.(type) {
+		case tea.KeyPressMsg:
+			switch msg.String() {
+			case "ctrl+c", "esc":
+				m.mode = Edit
+				var input *textarea.Model
+				switch m.edit.index {
+				case QueryParamInputIndex:
+					input = &m.paramEdit.queryParamInput
+				case BodyInputIndex:
+					input = &m.paramEdit.bodyInput
+				}
+				v := input.Value()
+				nLines := input.LineCount()
+				// TODO: handle doubleQuote, singleQuote, backQuotes
+				if nLines > 0 && nLines%2 != 0 {
+					lines := strings.Split(strings.ReplaceAll(v, "\r\n", "\n"), "\n")
+					lines = lines[:nLines-1]
+					v = strings.Join(lines, "\n")
+				}
+				input.SetValue(v)
+				return m, nil
+			}
+		}
+		var cmd tea.Cmd
+		switch m.edit.index {
+		case QueryParamInputIndex:
+			m.paramEdit.queryParamInput, cmd = m.paramEdit.queryParamInput.Update(msg)
+		case BodyInputIndex:
+			m.paramEdit.bodyInput, cmd = m.paramEdit.bodyInput.Update(msg)
+		}
 		return m, cmd
 	}
 	return m, nil
@@ -327,7 +411,27 @@ func (m model) View() tea.View {
 			queryParamInputTitle = ">" + queryParamInputTitle
 			queryParamInputPaddingLeft = 0
 		}
-		sb.WriteString(lipgloss.NewStyle().PaddingLeft(queryParamInputPaddingLeft).Render(queryParamInputTitle))
+		var queryParamInputContent strings.Builder
+		queryParamInputLines := strings.Split(m.paramEdit.queryParamInput.Value(), "\n")
+		queryParams := make(map[string]any)
+		// since empty strings.Split("", "\n") -> [""]
+		if len(queryParamInputLines) < 2 {
+			queryParamInputContent.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Render("NULL"))
+		} else {
+			for i := 0; i < len(queryParamInputLines); i += 2 {
+				prefix, suffix := "", ""
+				if i > 0 {
+					prefix = strings.Repeat(" ", len(queryParamInputTitle))
+				}
+				if i+1 != len(queryParamInputLines)-1 {
+					suffix = "\n"
+				}
+				k, v := queryParamInputLines[i], queryParamInputLines[i+1]
+				queryParams[k] = v
+				fmt.Fprintf(&queryParamInputContent, "%s\"%s\": \"%s\"%s", prefix, k, v, suffix)
+			}
+		}
+		sb.WriteString(lipgloss.NewStyle().PaddingLeft(queryParamInputPaddingLeft).Render(queryParamInputTitle + queryParamInputContent.String()))
 		sb.WriteByte('\n')
 		bodyInputTitle := "Body: "
 		bodyInputPaddingLeft := 1
@@ -335,7 +439,26 @@ func (m model) View() tea.View {
 			bodyInputTitle = ">" + bodyInputTitle
 			bodyInputPaddingLeft = 0
 		}
-		sb.WriteString(lipgloss.NewStyle().PaddingLeft(bodyInputPaddingLeft).Render(bodyInputTitle))
+		var bodyInputContent strings.Builder
+		bodyInputLines := strings.Split(m.paramEdit.bodyInput.Value(), "\n")
+		bodies := make(map[string]any)
+		if len(bodyInputLines) < 2 {
+			bodyInputContent.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Render("NULL"))
+		} else {
+			for i := 0; i < len(bodyInputLines); i += 2 {
+				prefix, suffix := "", ""
+				if i > 0 {
+					prefix = strings.Repeat(" ", len(bodyInputTitle))
+				}
+				if i+1 != len(bodyInputLines)-1 {
+					suffix = "\n"
+				}
+				k, v := bodyInputLines[i], bodyInputLines[i+1]
+				bodies[k] = v
+				fmt.Fprintf(&bodyInputContent, "%s\"%s\": \"%s\"%s", prefix, k, v, suffix)
+			}
+		}
+		sb.WriteString(lipgloss.NewStyle().PaddingLeft(bodyInputPaddingLeft).Render(bodyInputTitle + bodyInputContent.String()))
 		sb.WriteByte('\n')
 		sb.WriteString(lipgloss.NewStyle().Render(m.edit.confirm.View(m.edit.index == ConfirmSelectorIndex)))
 		return tea.NewView(lipgloss.NewStyle().Render(sb.String()))
@@ -343,8 +466,15 @@ func (m model) View() tea.View {
 		v := tea.NewView(m.result.view.View())
 		v.AltScreen = true
 		return v
+	case ParamEdit:
+		switch m.edit.index {
+		case QueryParamInputIndex:
+			return tea.NewView(m.paramEdit.queryParamInput.View())
+		case BodyInputIndex:
+			return tea.NewView(m.paramEdit.bodyInput.View())
+		}
 	}
-	return tea.NewView("[ERROR] should never reach here")
+	return tea.NewView("[ERROR] should never reach here\n")
 }
 
 func (m *model) resetEditModel() {
@@ -354,6 +484,8 @@ func (m *model) resetEditModel() {
 	m.edit.requestEnvironment.Reset()
 	m.edit.urlInput.Reset()
 	m.edit.confirm.Reset()
+	m.paramEdit.queryParamInput.Reset()
+	m.paramEdit.bodyInput.Reset()
 }
 
 // TODO: when in filter mode should disable all keybind but enter or edit
@@ -371,7 +503,7 @@ func (d itemDelegate) Render(w io.Writer, m list.Model, index int, listItem list
 		return
 	}
 	str := req.Url
-	suffix := lipgloss.NewStyle().PaddingLeft(0).Foreground(lipgloss.Color("246")).Render(fmt.Sprintf("  [%s] [%s]", req.Environment, req.Method))
+	suffix := lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Render(fmt.Sprintf("  [%s] [%s]", req.Environment, req.Method))
 
 	if index == m.Index() {
 		str = lipgloss.NewStyle().Foreground(lipgloss.Color("170")).Render(">" + str)
@@ -413,8 +545,9 @@ func (m *model) doRequest(req store.RequestEntity) (string, error) {
 	var err error
 	switch req.Method {
 	case "post":
-		res, err = http.Post(req.Url, "application/json", nil)
+		res, err = http.Post(req.Url, "application/json", strings.NewReader(req.Body))
 	case "get":
+		// TODO: combine the query param from req
 		res, err = http.Get(req.Url)
 	default:
 		return "", nil
@@ -434,7 +567,31 @@ func (m *model) doRequest(req store.RequestEntity) (string, error) {
 	return indentedJSONContent.String(), nil
 }
 
+func textareaContentAsJSON(ta *textarea.Model) string {
+	content := ta.Value()
+	if len(content) == 0 {
+		return ""
+	}
+	lines := strings.Split(content, "\n")
+	if len(lines) < 2 || len(lines)%2 != 0 {
+		log.Printf("[textareaContentAsJSON] expect line count is even, but got %v\n", len(lines))
+		return ""
+	}
+	kv := make(map[string]any)
+	for i := 0; i < len(lines); i += 2 {
+		k, v := lines[i], lines[i+1]
+		kv[k] = v
+	}
+	data, err := json.Marshal(kv)
+	if err != nil {
+		log.Printf("[textareaContentAsJSON]: %v\n", err)
+		return ""
+	}
+	return string(data)
+}
+
 func main() {
+	// TODO: add promt UI for error notification instead of streaming to file
 	if len(os.Getenv("DEBUG")) > 0 {
 		f, err := tea.LogToFile("dev.log", "[DEBUG]")
 		if err != nil {

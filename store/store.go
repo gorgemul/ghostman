@@ -19,6 +19,8 @@ type RequestEntity struct {
 	Url         string
 	Method      string
 	Environment string
+	QueryParams string
+	Body        string
 	CreatedAt   time.Time
 	UpdatedAt   time.Time
 }
@@ -26,6 +28,8 @@ type RequestEntity struct {
 type UpsertRequestParams struct {
 	Id          *int64 // nil if insert
 	Url         string
+	QueryParams string
+	Body        string
 	Method      string
 	Environment string
 }
@@ -49,9 +53,11 @@ func New() (*Store, error) {
 	createRequestsStatement := `
 	CREATE TABLE IF NOT EXISTS requests (
 		id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
-		url VARCHAR(255),
-		method VARCHAR(255),
-		environment VARCHAR(255),
+		url VARCHAR(255) NOT NULL,
+		method VARCHAR(255) NOT NULL,
+		environment VARCHAR(255) NOT NULL,
+		"queryParams" TEXT NOT NULL DEFAULT '',
+		body TEXT NOT NULL DEFAULT '',
 		"createdAt" TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 		"updatedAt" TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 	)
@@ -90,14 +96,15 @@ func (s *Store) FindRequests() ([]RequestEntity, error) {
 		err  error
 	)
 	log.Printf("FindRequests config:%v, env: %v\n", requestMethodConfig, requestEnvironmentConfig)
+	// TODO: add body and params query
 	if requestMethodConfig == "all" && requestEnvironmentConfig == "all" {
-		rows, err = s.db.Query(`SELECT id, url, method, environment, "createdAt", "updatedAt" FROM requests;`)
+		rows, err = s.db.Query(`SELECT id, url, method, environment, "createdAt", "updatedAt", "queryParams", body FROM requests;`)
 	} else if requestMethodConfig == "all" {
-		rows, err = s.db.Query(`SELECT id, url, method, environment, "createdAt", "updatedAt" FROM requests WHERE environment = ?;`, requestEnvironmentConfig)
+		rows, err = s.db.Query(`SELECT id, url, method, environment, "createdAt", "updatedAt", "queryParams", body FROM requests WHERE environment = ?;`, requestEnvironmentConfig)
 	} else if requestEnvironmentConfig == "all" {
-		rows, err = s.db.Query(`SELECT id, url, method, environment, "createdAt", "updatedAt" FROM requests WHERE method = ?;`, requestMethodConfig)
+		rows, err = s.db.Query(`SELECT id, url, method, environment, "createdAt", "updatedAt", "queryParams", body FROM requests WHERE method = ?;`, requestMethodConfig)
 	} else { // both not "all"
-		rows, err = s.db.Query(`SELECT id, url, method, environment, "createdAt", "updatedAt" FROM requests WHERE environment = ? AND method = ?;`, requestEnvironmentConfig, requestMethodConfig)
+		rows, err = s.db.Query(`SELECT id, url, method, environment, "createdAt", "updatedAt", "queryParams", body FROM requests WHERE environment = ? AND method = ?;`, requestEnvironmentConfig, requestMethodConfig)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("FindRequests: %v", err)
@@ -105,7 +112,7 @@ func (s *Store) FindRequests() ([]RequestEntity, error) {
 	defer rows.Close()
 	for rows.Next() {
 		var req RequestEntity
-		if err := rows.Scan(&req.Id, &req.Url, &req.Method, &req.Environment, &req.CreatedAt, &req.UpdatedAt); err != nil {
+		if err := rows.Scan(&req.Id, &req.Url, &req.Method, &req.Environment, &req.CreatedAt, &req.UpdatedAt, &req.QueryParams, &req.Body); err != nil {
 			return nil, fmt.Errorf("FindRequests: %v", err)
 		}
 		reqs = append(reqs, req)
@@ -122,10 +129,10 @@ func (s *Store) UpsertRequest(params UpsertRequestParams) (int64, error) {
 	if params.Id != nil {
 		requestId = fmt.Sprintf("%d", *params.Id)
 	}
-	log.Printf("[UpsertRequest] request: id=%v, url=%v, method=%v, environment=%v\n", requestId, params.Url, params.Method, params.Environment)
+	log.Printf("[UpsertRequest] request: id=%v, url=%v, method=%v, environment=%v, queryParams=%v, body=%v\n", requestId, params.Url, params.Method, params.Environment, params.QueryParams, params.Body)
 	// insert
 	if params.Id == nil {
-		result, err := s.db.Exec(`INSERT INTO requests (url, method, environment) VALUES (?, ?, ?);`, params.Url, params.Method, params.Environment)
+		result, err := s.db.Exec(`INSERT INTO requests (url, method, environment, "queryParams", body) VALUES (?, ?, ?, ?, ?);`, params.Url, params.Method, params.Environment, params.QueryParams, params.Body)
 		if err != nil {
 			return 0, fmt.Errorf("UpsertRequest: %v\n", err)
 		}
@@ -137,7 +144,7 @@ func (s *Store) UpsertRequest(params UpsertRequestParams) (int64, error) {
 		return id, nil
 	}
 	// update
-	result, err := s.db.Exec(`UPDATE requests SET "updatedAt" = ?, url = ?, method = ?, environment = ? WHERE id = ?;`, time.Now().UTC(), params.Url, params.Method, params.Environment, *params.Id)
+	result, err := s.db.Exec(`UPDATE requests SET "updatedAt" = ?, url = ?, method = ?, environment = ?, "queryParams" = ?, body = ? WHERE id = ?;`, time.Now().UTC(), params.Url, params.Method, params.Environment, params.QueryParams, params.Body, *params.Id)
 	if err != nil {
 		return 0, fmt.Errorf("UpsertRequest: %v\n", err)
 	}
