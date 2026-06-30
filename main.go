@@ -31,15 +31,22 @@ const (
 	ConfirmIndex
 )
 
-type Mode int
+type (
+	appMode  int
+	editMode int
+)
 
 const (
-	Dashboard Mode = iota
-	// TODO: should provide help message in Edit mode
-	Edit
-	Result
-	// TODO: Better name
-	ParamEdit
+	APP_MODE_DASHBOARD appMode = iota
+	// TODO: should provide help message in APP_MODE_EDIT mode
+	APP_MODE_EDIT
+	APP_MODE_RESULT
+)
+
+const (
+	EDIT_MODE_ALL = iota
+	EDIT_MODE_QUERY_PARAMS
+	EDIT_MODE_BODY
 )
 
 type dashboardModel struct {
@@ -49,46 +56,43 @@ type dashboardModel struct {
 }
 
 type editModel struct {
+	mode        editMode
 	index       int
 	id          *int64 // to differenciate insert and update in edit mode
 	method      selector.Model
 	environment selector.Model
 	url         textinput.Model
-	confirm     selector.Model // TODO: maybe just keep it as cmd+s or ctrl + s to save
+	queryParams textarea.Model
+	body        textarea.Model
+	confirm     selector.Model
 }
 
 type resultModel struct {
 	view viewport.Model
 }
 
-type paramEditModel struct {
-	queryParamInput textarea.Model
-	bodyInput       textarea.Model
-}
-
 // TODO: paramEdit mode should put inside edit mode
 type model struct {
 	store     *store.Store
-	mode      Mode
-	dashboard dashboardModel // Mode == Dashboard
-	edit      editModel      // Mode == Edit
-	result    resultModel    // Mode == Result
-	paramEdit paramEditModel // Mode == ParamEdit
+	mode      appMode
+	dashboard dashboardModel // Mode == APP_MODE_DASHBOARD
+	edit      editModel      // Mode == APP_MODE_EDIT
+	result    resultModel    // Mode == APP_MODE_RESULT
 }
 
 type itemDelegate struct{}
 
 func initialModel(store *store.Store) model {
-	l := list.New(
+	list := list.New(
 		[]list.Item{},
 		itemDelegate{},
 		60,
 		20,
 	)
 	config := store.FindConfig()
-	l.Title = fmt.Sprintf("env: %s, method: %s", config.Environment, config.Method)
-	l.SetShowStatusBar(false)
-	l.AdditionalShortHelpKeys = func() []key.Binding {
+	list.Title = fmt.Sprintf("env: %s, method: %s", config.Environment, config.Method)
+	list.SetShowStatusBar(false)
+	list.AdditionalShortHelpKeys = func() []key.Binding {
 		return []key.Binding{
 			key.NewBinding(key.WithKeys("n"), key.WithHelp("n", "new")),
 			key.NewBinding(key.WithKeys("e"), key.WithHelp("e", "edit")),
@@ -96,7 +100,7 @@ func initialModel(store *store.Store) model {
 			key.NewBinding(key.WithKeys("M"), key.WithHelp("M", "method")),
 		}
 	}
-	l.AdditionalFullHelpKeys = func() []key.Binding {
+	list.AdditionalFullHelpKeys = func() []key.Binding {
 		return []key.Binding{
 			key.NewBinding(key.WithKeys("n"), key.WithHelp("n", "new")),
 			key.NewBinding(key.WithKeys("e"), key.WithHelp("e", "edit")),
@@ -104,59 +108,47 @@ func initialModel(store *store.Store) model {
 			key.NewBinding(key.WithKeys("M"), key.WithHelp("M", "method")),
 		}
 	}
-	url := textinput.New()
-	url.CharLimit = 128
-	url.SetWidth(128)
-	url.Prompt = ""
-	url.Placeholder = "NULL"
-	queryParamInput := textarea.New()
-	queryParamInput.SetHeight(20)
-	queryParamInputStyles := queryParamInput.Styles()
-	queryParamInputStyles.Cursor.Blink = false
-	queryParamInput.SetStyles(queryParamInputStyles)
-	bodyInput := textarea.New()
-	bodyInput.SetHeight(20)
-	bodyInputStyles := bodyInput.Styles()
-	bodyInputStyles.Cursor.Blink = false
-	bodyInput.SetStyles(bodyInputStyles)
 	m := model{
 		store: store,
-		mode:  Dashboard,
+		mode:  APP_MODE_DASHBOARD,
 		dashboard: dashboardModel{
-			list: l,
+			list: list,
 			// only used for state management, not for display
-			methodConfig:      selector.New("mthodConfig", []string{"all", "get", "post"}),
-			environmentConfig: selector.New("environmentConfig", []string{"all", "local", "test", "staging", "production"}),
+			methodConfig:      selector.New("", []string{"all", "get", "post"}),
+			environmentConfig: selector.New("", []string{"all", "local", "test", "staging", "production"}),
 		},
 		edit: editModel{
 			index:       0,
 			method:      selector.New("Method", []string{"get", "post"}),
 			environment: selector.New("Environment", []string{"local", "test", "staging", "production"}),
-			url:         url,
+			url:         newTextinputWithStyles(),
+			queryParams: newTextareaWithStyles(),
+			body:        newTextareaWithStyles(),
 			confirm:     selector.New("", []string{"save", "cancel"}),
 		},
-		result:    resultModel{view: viewport.New()},
-		paramEdit: paramEditModel{queryParamInput: queryParamInput, bodyInput: bodyInput},
+		result: resultModel{view: viewport.New()},
 	}
 	m.tryPopulateListWithDB()
 	m.dashboard.methodConfig.SetValue(config.Method)
 	m.dashboard.environmentConfig.SetValue(config.Environment)
-	m.dashboard.list.Styles.Title = lipgloss.NewStyle().Foreground(lipgloss.Color("255"))
 	m.dashboard.list.SetDelegate(itemDelegate{})
 	return m
 }
 
 func (m model) Init() tea.Cmd { return nil }
+
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if msg, ok := msg.(tea.WindowSizeMsg); ok {
 		m.dashboard.list.SetSize(msg.Width, msg.Height)
 		m.result.view.SetWidth(msg.Width)
 		m.result.view.SetHeight(msg.Height)
-		m.paramEdit.queryParamInput.SetWidth(msg.Width)
-		m.paramEdit.bodyInput.SetWidth(msg.Width)
+		m.edit.queryParams.SetWidth(msg.Width)
+		m.edit.queryParams.SetHeight(msg.Height)
+		m.edit.body.SetWidth(msg.Width)
+		m.edit.body.SetHeight(msg.Height)
 	}
 	switch m.mode {
-	case Dashboard:
+	case APP_MODE_DASHBOARD:
 		switch msg := msg.(type) {
 		case tea.KeyPressMsg:
 			switch msg.String() {
@@ -184,7 +176,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						if len(queryParamsTrim) > 0 {
 							queryParamsTrim = queryParamsTrim[:len(queryParamsTrim)-1]
 						}
-						m.paramEdit.queryParamInput.SetValue(queryParamsTrim)
+						m.edit.queryParams.SetValue(queryParamsTrim)
 						bodyText := req.Body
 						body := make(map[string]any)
 						var bodyInputContent strings.Builder
@@ -197,13 +189,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						if len(bodyTrim) > 0 {
 							bodyTrim = bodyTrim[:len(bodyTrim)-1]
 						}
-						m.paramEdit.bodyInput.SetValue(bodyTrim)
-						m.mode = Edit
+						m.edit.body.SetValue(bodyTrim)
+						m.mode = APP_MODE_EDIT
 					}
 				}
 			case "n":
 				if !m.dashboard.list.SettingFilter() {
-					m.mode = Edit
+					m.mode = APP_MODE_EDIT
 					m.resetDashboardModel()
 				}
 			case "E":
@@ -240,7 +232,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					width := m.result.view.Width()
 					warpppedContent := lipgloss.NewStyle().Width(width).Render(content)
 					m.result.view.SetContent(warpppedContent)
-					m.mode = Result
+					m.mode = APP_MODE_RESULT
 				}
 				return m, nil
 			}
@@ -248,137 +240,140 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		var cmd tea.Cmd
 		m.dashboard.list, cmd = m.dashboard.list.Update(msg)
 		return m, cmd
-	case Edit:
-		switch msg := msg.(type) {
-		case tea.PasteMsg:
-			if m.edit.url.Focused() {
-				var cmd tea.Cmd
-				m.edit.url, cmd = m.edit.url.Update(msg)
-				return m, cmd
-			}
-		case tea.KeyPressMsg:
-			switch msg.String() {
-			case "j", "down":
-				if m.edit.index < ConfirmIndex && !m.edit.url.Focused() {
-					m.edit.index++
+	case APP_MODE_EDIT:
+		switch m.edit.mode {
+		case EDIT_MODE_ALL:
+			switch msg := msg.(type) {
+			case tea.PasteMsg:
+				if m.edit.url.Focused() {
+					var cmd tea.Cmd
+					m.edit.url, cmd = m.edit.url.Update(msg)
+					return m, cmd
 				}
-			case "k", "up":
-				// TODO: maybe need to change when adding headers and body
-				if m.edit.index > 0 && !m.edit.url.Focused() {
-					m.edit.index--
-				}
-			case "l", "right":
-				switch m.edit.index {
-				case MethodIndex:
-					m.edit.method.Next()
-				case EnvironmentIndex:
-					m.edit.environment.Next()
-				case ConfirmIndex:
-					m.edit.confirm.Next()
-				}
-			case "h", "left":
-				switch m.edit.index {
-				case MethodIndex:
-					m.edit.method.Prev()
-				case EnvironmentIndex:
-					m.edit.environment.Prev()
-				case ConfirmIndex:
-					m.edit.confirm.Prev()
-				}
-			// not doing any return in above case, when we should not shadow key when user input
-			case "enter":
-				switch m.edit.index {
-				case MethodIndex, EnvironmentIndex:
-					m.edit.index++
-				case UrlIndex:
-					if m.edit.url.Focused() {
-						m.edit.url.Blur()
-					} else {
-						m.edit.url.Focus()
+			case tea.KeyPressMsg:
+				switch msg.String() {
+				case "j", "down":
+					if m.edit.index < ConfirmIndex && !m.edit.url.Focused() {
+						m.edit.index++
 					}
-				case QueryParamsIndex:
-					m.paramEdit.queryParamInput.Focus()
-					m.mode = ParamEdit
-					// TODO: set value from db
-				case BodyIndex:
-					m.paramEdit.bodyInput.Focus()
-					m.mode = ParamEdit
-				case ConfirmIndex:
-					if m.edit.confirm.Value() == "save" && len(m.edit.url.Value()) > 0 {
-						if _, err := m.store.UpsertRequest(store.UpsertRequestParams{
-							Id:          m.edit.id,
-							Url:         m.edit.url.Value(),
-							Method:      m.edit.method.Value(),
-							Environment: m.edit.environment.Value(),
-							QueryParams: textareaContentAsJSON(&m.paramEdit.queryParamInput),
-							Body:        textareaContentAsJSON(&m.paramEdit.bodyInput),
-						}); err != nil {
-							log.Println("Update: ", err)
+				case "k", "up":
+					// TODO: maybe need to change when adding headers and body
+					if m.edit.index > 0 && !m.edit.url.Focused() {
+						m.edit.index--
+					}
+				case "l", "right":
+					switch m.edit.index {
+					case MethodIndex:
+						m.edit.method.Next()
+					case EnvironmentIndex:
+						m.edit.environment.Next()
+					case ConfirmIndex:
+						m.edit.confirm.Next()
+					}
+				case "h", "left":
+					switch m.edit.index {
+					case MethodIndex:
+						m.edit.method.Prev()
+					case EnvironmentIndex:
+						m.edit.environment.Prev()
+					case ConfirmIndex:
+						m.edit.confirm.Prev()
+					}
+				// not doing any return in above case, when we should not shadow key when user input
+				case "enter":
+					switch m.edit.index {
+					case MethodIndex, EnvironmentIndex:
+						m.edit.index++
+					case UrlIndex:
+						if m.edit.url.Focused() {
+							m.edit.url.Blur()
 						} else {
-							m.tryPopulateListWithDB()
+							m.edit.url.Focus()
 						}
+					case QueryParamsIndex:
+						m.edit.queryParams.Focus()
+						m.edit.mode = EDIT_MODE_QUERY_PARAMS
+						// TODO: set value from db
+					case BodyIndex:
+						m.edit.body.Focus()
+						m.edit.mode = EDIT_MODE_BODY
+					case ConfirmIndex:
+						if m.edit.confirm.Value() == "save" && len(m.edit.url.Value()) > 0 {
+							if _, err := m.store.UpsertRequest(store.UpsertRequestParams{
+								Id:          m.edit.id,
+								Url:         m.edit.url.Value(),
+								Method:      m.edit.method.Value(),
+								Environment: m.edit.environment.Value(),
+								QueryParams: textareaContentAsJSON(&m.edit.queryParams),
+								Body:        textareaContentAsJSON(&m.edit.body),
+							}); err != nil {
+								log.Println("Update: ", err)
+							} else {
+								m.tryPopulateListWithDB()
+							}
+						}
+						m.resetEditModel()
+						m.mode = APP_MODE_DASHBOARD
+					}
+					return m, nil
+				case "esc", "ctrl+c":
+					if m.edit.index == UrlIndex && m.edit.url.Focused() {
+						m.edit.url.Blur()
+						return m, nil
 					}
 					m.resetEditModel()
-					m.mode = Dashboard
-				}
-				return m, nil
-			case "esc", "ctrl+c":
-				if m.edit.index == UrlIndex && m.edit.url.Focused() {
-					m.edit.url.Blur()
+					m.mode = APP_MODE_DASHBOARD
 					return m, nil
 				}
-				m.resetEditModel()
-				m.mode = Dashboard
-				return m, nil
 			}
+			var cmd tea.Cmd
+			m.edit.url, cmd = m.edit.url.Update(msg)
+			return m, cmd
+		case EDIT_MODE_QUERY_PARAMS, EDIT_MODE_BODY:
+			switch msg := msg.(type) {
+			case tea.KeyPressMsg:
+				switch msg.String() {
+				case "ctrl+c", "esc":
+					m.edit.mode = EDIT_MODE_ALL
+					var input *textarea.Model
+					switch m.edit.index {
+					case QueryParamsIndex:
+						input = &m.edit.queryParams
+					case BodyIndex:
+						input = &m.edit.body
+					}
+					v := input.Value()
+					nLines := input.LineCount()
+					// TODO: handle doubleQuote, singleQuote, backQuotes
+					if nLines > 0 && nLines%2 != 0 {
+						lines := strings.Split(strings.ReplaceAll(v, "\r\n", "\n"), "\n")
+						lines = lines[:nLines-1]
+						v = strings.Join(lines, "\n")
+					}
+					input.SetValue(v)
+					return m, nil
+				}
+			}
+			var cmd tea.Cmd
+			switch m.edit.index {
+			case QueryParamsIndex:
+				m.edit.queryParams, cmd = m.edit.queryParams.Update(msg)
+			case BodyIndex:
+				m.edit.body, cmd = m.edit.body.Update(msg)
+			}
+			return m, cmd
 		}
-		var cmd tea.Cmd
-		m.edit.url, cmd = m.edit.url.Update(msg)
-		return m, cmd
-	case Result:
+	case APP_MODE_RESULT:
 		switch msg := msg.(type) {
 		case tea.KeyPressMsg:
 			switch msg.String() {
 			case "q", "ctrl+c", "esc":
-				m.mode = Dashboard
+				m.mode = APP_MODE_DASHBOARD
 				return m, nil
 			}
 		}
 		var cmd tea.Cmd
 		m.result.view, cmd = m.result.view.Update(msg)
-		return m, cmd
-	case ParamEdit:
-		switch msg := msg.(type) {
-		case tea.KeyPressMsg:
-			switch msg.String() {
-			case "ctrl+c", "esc":
-				m.mode = Edit
-				var input *textarea.Model
-				switch m.edit.index {
-				case QueryParamsIndex:
-					input = &m.paramEdit.queryParamInput
-				case BodyIndex:
-					input = &m.paramEdit.bodyInput
-				}
-				v := input.Value()
-				nLines := input.LineCount()
-				// TODO: handle doubleQuote, singleQuote, backQuotes
-				if nLines > 0 && nLines%2 != 0 {
-					lines := strings.Split(strings.ReplaceAll(v, "\r\n", "\n"), "\n")
-					lines = lines[:nLines-1]
-					v = strings.Join(lines, "\n")
-				}
-				input.SetValue(v)
-				return m, nil
-			}
-		}
-		var cmd tea.Cmd
-		switch m.edit.index {
-		case QueryParamsIndex:
-			m.paramEdit.queryParamInput, cmd = m.paramEdit.queryParamInput.Update(msg)
-		case BodyIndex:
-			m.paramEdit.bodyInput, cmd = m.paramEdit.bodyInput.Update(msg)
-		}
 		return m, cmd
 	}
 	return m, nil
@@ -386,106 +381,107 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m model) View() tea.View {
 	switch m.mode {
-	case Dashboard:
+	case APP_MODE_DASHBOARD:
 		return tea.NewView("\n" + m.dashboard.list.View())
-	case Edit:
-		var sb strings.Builder
-		sb.WriteString(m.edit.method.View(m.edit.index == MethodIndex))
-		sb.WriteString(m.edit.environment.View(m.edit.index == EnvironmentIndex))
-		// TODO: in get url and has query parameters should reflect that in the url?
-		urlColor := "255"
-		urlTitle := "Url: "
-		urlPaddingLeft := 1
-		if m.edit.index == UrlIndex {
-			if m.edit.url.Focused() {
-				urlColor = "170"
+	case APP_MODE_EDIT:
+		switch m.edit.mode {
+		case EDIT_MODE_ALL:
+			var sb strings.Builder
+			sb.WriteString(m.edit.method.View(m.edit.index == MethodIndex))
+			sb.WriteString(m.edit.environment.View(m.edit.index == EnvironmentIndex))
+			// TODO: in get url and has query parameters should reflect that in the url?
+			urlColor := "255"
+			urlTitle := "Url: "
+			urlPaddingLeft := 1
+			if m.edit.index == UrlIndex {
+				if m.edit.url.Focused() {
+					urlColor = "170"
+				}
+				urlTitle = ">" + urlTitle
+				urlPaddingLeft = 0
 			}
-			urlTitle = ">" + urlTitle
-			urlPaddingLeft = 0
-		}
-		sb.WriteString(lipgloss.NewStyle().PaddingLeft(urlPaddingLeft).Foreground(lipgloss.Color(urlColor)).Render(urlTitle + m.edit.url.View()))
-		sb.WriteByte('\n')
-		queryParamInputTitle := "QueryParameter: "
-		queryParamInputPaddingLeft := 1
-		if m.edit.index == QueryParamsIndex {
-			queryParamInputTitle = ">" + queryParamInputTitle
-			queryParamInputPaddingLeft = 0
-		}
-		var queryParamInputContent strings.Builder
-		queryParamInputLines := strings.Split(m.paramEdit.queryParamInput.Value(), "\n")
-		queryParams := make(map[string]any)
-		// since empty strings.Split("", "\n") -> [""]
-		if len(queryParamInputLines) < 2 {
-			queryParamInputContent.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Render("NULL"))
-		} else {
-			for i := 0; i < len(queryParamInputLines); i += 2 {
-				prefix, suffix := "", ""
-				if i > 0 {
-					prefix = strings.Repeat(" ", len(queryParamInputTitle))
-				}
-				if i+1 != len(queryParamInputLines)-1 {
-					suffix = "\n"
-				}
-				k, v := queryParamInputLines[i], queryParamInputLines[i+1]
-				queryParams[k] = v
-				fmt.Fprintf(&queryParamInputContent, "%s\"%s\": \"%s\"%s", prefix, k, v, suffix)
+			sb.WriteString(lipgloss.NewStyle().PaddingLeft(urlPaddingLeft).Foreground(lipgloss.Color(urlColor)).Render(urlTitle + m.edit.url.View()))
+			sb.WriteByte('\n')
+			queryParamInputTitle := "QueryParameter: "
+			queryParamInputPaddingLeft := 1
+			if m.edit.index == QueryParamsIndex {
+				queryParamInputTitle = ">" + queryParamInputTitle
+				queryParamInputPaddingLeft = 0
 			}
-		}
-		sb.WriteString(lipgloss.NewStyle().PaddingLeft(queryParamInputPaddingLeft).Render(queryParamInputTitle + queryParamInputContent.String()))
-		sb.WriteByte('\n')
-		bodyInputTitle := "Body: "
-		bodyInputPaddingLeft := 1
-		if m.edit.index == BodyIndex {
-			bodyInputTitle = ">" + bodyInputTitle
-			bodyInputPaddingLeft = 0
-		}
-		var bodyInputContent strings.Builder
-		bodyInputLines := strings.Split(m.paramEdit.bodyInput.Value(), "\n")
-		bodies := make(map[string]any)
-		if len(bodyInputLines) < 2 {
-			bodyInputContent.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Render("NULL"))
-		} else {
-			for i := 0; i < len(bodyInputLines); i += 2 {
-				prefix, suffix := "", ""
-				if i > 0 {
-					prefix = strings.Repeat(" ", len(bodyInputTitle))
+			var queryParamInputContent strings.Builder
+			queryParamInputLines := strings.Split(m.edit.queryParams.Value(), "\n")
+			queryParams := make(map[string]any)
+			// since empty strings.Split("", "\n") -> [""]
+			if len(queryParamInputLines) < 2 {
+				queryParamInputContent.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Render("NULL"))
+			} else {
+				for i := 0; i < len(queryParamInputLines); i += 2 {
+					prefix, suffix := "", ""
+					if i > 0 {
+						prefix = strings.Repeat(" ", len(queryParamInputTitle))
+					}
+					if i+1 != len(queryParamInputLines)-1 {
+						suffix = "\n"
+					}
+					k, v := queryParamInputLines[i], queryParamInputLines[i+1]
+					queryParams[k] = v
+					fmt.Fprintf(&queryParamInputContent, "%s\"%s\": \"%s\"%s", prefix, k, v, suffix)
 				}
-				if i+1 != len(bodyInputLines)-1 {
-					suffix = "\n"
-				}
-				k, v := bodyInputLines[i], bodyInputLines[i+1]
-				bodies[k] = v
-				fmt.Fprintf(&bodyInputContent, "%s\"%s\": \"%s\"%s", prefix, k, v, suffix)
 			}
+			sb.WriteString(lipgloss.NewStyle().PaddingLeft(queryParamInputPaddingLeft).Render(queryParamInputTitle + queryParamInputContent.String()))
+			sb.WriteByte('\n')
+			bodyInputTitle := "Body: "
+			bodyInputPaddingLeft := 1
+			if m.edit.index == BodyIndex {
+				bodyInputTitle = ">" + bodyInputTitle
+				bodyInputPaddingLeft = 0
+			}
+			var bodyInputContent strings.Builder
+			bodyInputLines := strings.Split(m.edit.body.Value(), "\n")
+			bodies := make(map[string]any)
+			if len(bodyInputLines) < 2 {
+				bodyInputContent.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Render("NULL"))
+			} else {
+				for i := 0; i < len(bodyInputLines); i += 2 {
+					prefix, suffix := "", ""
+					if i > 0 {
+						prefix = strings.Repeat(" ", len(bodyInputTitle))
+					}
+					if i+1 != len(bodyInputLines)-1 {
+						suffix = "\n"
+					}
+					k, v := bodyInputLines[i], bodyInputLines[i+1]
+					bodies[k] = v
+					fmt.Fprintf(&bodyInputContent, "%s\"%s\": \"%s\"%s", prefix, k, v, suffix)
+				}
+			}
+			sb.WriteString(lipgloss.NewStyle().PaddingLeft(bodyInputPaddingLeft).Render(bodyInputTitle + bodyInputContent.String()))
+			sb.WriteByte('\n')
+			sb.WriteString(lipgloss.NewStyle().Render(m.edit.confirm.View(m.edit.index == ConfirmIndex)))
+			return tea.NewView(lipgloss.NewStyle().Render(sb.String()))
+		case EDIT_MODE_QUERY_PARAMS:
+			return tea.NewView(m.edit.queryParams.View())
+		case EDIT_MODE_BODY:
+			return tea.NewView(m.edit.body.View())
 		}
-		sb.WriteString(lipgloss.NewStyle().PaddingLeft(bodyInputPaddingLeft).Render(bodyInputTitle + bodyInputContent.String()))
-		sb.WriteByte('\n')
-		sb.WriteString(lipgloss.NewStyle().Render(m.edit.confirm.View(m.edit.index == ConfirmIndex)))
-		return tea.NewView(lipgloss.NewStyle().Render(sb.String()))
-	case Result:
+	case APP_MODE_RESULT:
 		v := tea.NewView(m.result.view.View())
 		v.AltScreen = true
 		return v
-	case ParamEdit:
-		switch m.edit.index {
-		case QueryParamsIndex:
-			return tea.NewView(m.paramEdit.queryParamInput.View())
-		case BodyIndex:
-			return tea.NewView(m.paramEdit.bodyInput.View())
-		}
 	}
 	return tea.NewView("[ERROR] should never reach here\n")
 }
 
 func (m *model) resetEditModel() {
+	m.edit.mode = EDIT_MODE_ALL
 	m.edit.id = nil
 	m.edit.index = 0
 	m.edit.method.Reset()
 	m.edit.environment.Reset()
 	m.edit.url.Reset()
 	m.edit.confirm.Reset()
-	m.paramEdit.queryParamInput.Reset()
-	m.paramEdit.bodyInput.Reset()
+	m.edit.queryParams.Reset()
+	m.edit.body.Reset()
 }
 
 // TODO: when in filter mode should disable all keybind but enter or edit
@@ -588,6 +584,24 @@ func textareaContentAsJSON(ta *textarea.Model) string {
 		return ""
 	}
 	return string(data)
+}
+
+func newTextareaWithStyles() textarea.Model {
+	ta := textarea.New()
+	ta.SetHeight(20)
+	taStyles := ta.Styles()
+	taStyles.Cursor.Blink = false
+	ta.SetStyles(taStyles)
+	return ta
+}
+
+func newTextinputWithStyles() textinput.Model {
+	ti := textinput.New()
+	ti.CharLimit = 128
+	ti.SetWidth(128)
+	ti.Prompt = ""
+	ti.Placeholder = "NULL"
+	return ti
 }
 
 func main() {
